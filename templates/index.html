@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ACT Research Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-white text-gray-800 font-sans">
+
+  <div class="p-6 w-full mx-auto">
+    <div class="flex justify-between items-center mb-8">
+      <h1 class="text-4xl font-bold text-blue-800">🧩 API Monitoring Dashboard</h1>
+      <button onclick="fetchInsights()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">🔄 Refresh</button>
+    </div>
+
+    <!-- Summary Cards Row -->
+    <div class="grid grid-cols-1 md:grid-cols-5 gap-6 mb-6">
+      <!-- Total Calls -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Total API Calls (24h)</h2>
+        <p id="total-calls" class="text-3xl font-bold text-blue-700">Loading...</p>
+        <div id="endpoint-list" class="mt-4"></div>
+      </div>
+
+
+      
+      <!-- Error Rate -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">API Error Rate (24h)</h2>
+        <p id="error-rate" class="text-3xl font-bold text-red-700">Loading...</p>
+        <div id="top-error-endpoints" class="mt-4"></div>
+      </div>
+
+      
+      <!-- Performance Metrics -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Average Response Time (24h)</h2>
+        <p id="avg-response-time" class="text-3xl font-bold text-green-700">Loading...</p>
+      </div>
+    
+
+      <!-- Hourly API Calls -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Hourly Calls (Last 12h)</h2>
+        <canvas id="callsChart" height="100"></canvas>
+      </div>
+
+      <!-- Traffic Source -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Traffic Source (24h)</h2>
+        <canvas id="trafficChart" height="80"></canvas>
+      </div>
+    </div>
+
+    <!-- Scrollable Row for Stream Sections -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+      <!-- API Health Section -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">📡 API Health</h2>
+        <div id="api-health-log" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
+          <!-- Endpoint status updates will stream here -->
+        </div>
+      </div>
+
+      <!-- Watchdog Activity Section -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">👁 Watchdog Activity</h2>
+
+        <div class="mb-4">
+          <p class="text-gray-500 text-sm">Last Heartbeat:</p>
+          <p id="watchdog-heartbeat" class="text-green-600 font-mono text-sm">Waiting...</p>
+        </div>
+
+        <div id="watchdog-log" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
+          <!-- File events will populate here -->
+        </div>
+      </div>
+
+      <!-- FTP Automations Section -->
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">📤 FTP Automations</h2>
+
+        <div class="mb-4">
+          <p class="text-gray-500 text-sm">Last Authenticated:</p>
+          <p id="ftp-auth-time" class="text-green-600 font-mono text-sm">Waiting...</p>
+        </div>
+
+        <div class="space-y-2 text-sm max-h-[400px] overflow-y-auto" id="ftp-script-log">
+          <!-- FTP Events stream here -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- API Usage Stats Section -->
+    <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5 mt-6">
+      <h2 class="text-xl font-semibold text-blue-700 mb-4">📊 API Usage Stats (Last 30 Days)</h2>
+      <div id="api-usage-list" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
+        <!-- API usage stats will be populated here -->
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function formatTimestamp(isoString) {
+      const date = new Date(isoString);
+      const options = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+      return date.toLocaleString(undefined, options);
+    }
+
+    function formatK(num) {
+      return num >= 1000 ? (num / 1000).toFixed(2) + 'k' : num.toString();
+    }
+
+    async function fetchInsights() {
+        try {
+            const response = await fetch('http://192.168.1.17:5003/api/insights');
+            const result = await response.json();
+
+            // Display total calls
+            document.getElementById("total-calls").textContent = result.total_calls;
+
+            // Aggregate call counts for each endpoint
+            const endpointCounts = {};
+
+            result.endpoints.forEach(endpoint => {
+                if (endpoint.endpoint in endpointCounts) {
+                    endpointCounts[endpoint.endpoint] += endpoint.count;
+                } else {
+                    endpointCounts[endpoint.endpoint] = endpoint.count;
+                }
+            });
+
+            // Convert the aggregated data into an array of objects
+            const aggregatedEndpoints = Object.keys(endpointCounts).map(endpoint => ({
+                endpoint: endpoint,
+                count: endpointCounts[endpoint]
+            }));
+
+            // Sort the endpoints by total count in descending order and get top 5
+            const topEndpoints = aggregatedEndpoints.sort((a, b) => b.count - a.count).slice(0, 5);
+
+            // Display top 5 endpoints and their counts
+            const endpointList = document.getElementById("endpoint-list");
+            endpointList.innerHTML = '';  // Clear previous data
+            topEndpoints.forEach(endpoint => {
+                const entry = document.createElement('div');
+                entry.classList.add('text-sm', 'text-gray-600');
+                entry.innerHTML = `<span class="font-semibold">${endpoint.endpoint}:</span> ${endpoint.count} calls`;
+                endpointList.appendChild(entry);
+            });
+
+            // Hourly Calls Chart (using just hour labels)
+            const sorted = result.endpoints.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).slice(-12);
+            const labels = sorted.map(row => {
+                const date = new Date(row.timestamp);
+                return date.toLocaleString(undefined, { hour: '2-digit', hour12: true });  // Only show hour
+            });
+            const values = sorted.map(row => row.count);
+
+            if (window.callsChartInstance) {
+                window.callsChartInstance.data.labels = labels;
+                window.callsChartInstance.data.datasets[0].data = values;
+                window.callsChartInstance.update();
+            } else {
+                const ctx = document.getElementById("callsChart").getContext("2d");
+                window.callsChartInstance = new Chart(ctx, {
+                    type: "line",
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: "API Calls",
+                            data: values,
+                            fill: false,
+                            borderColor: "#2563eb",
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+            }
+        } catch (error) {
+            console.error("Error fetching insights:", error);
+        }
+    }
+
+
+
+    async function fetchErrorRate() {
+        try {
+            // Fetch insights to get total calls
+            const insightsResponse = await fetch('http://192.168.1.17:5003/api/insights');
+            const insightsResult = await insightsResponse.json();
+            const totalCalls = insightsResult.total_calls;
+
+            // Fetch error data
+            const errorResponse = await fetch('http://192.168.1.17:5003/api/error_rate');
+            const errorResult = await errorResponse.json();
+            
+            const errorCount = errorResult.top_error_endpoints.reduce((acc, endpoint) => acc + endpoint.errors, 0);
+            
+            // Calculate the error rate
+            let errorRate = 0;
+            if (totalCalls > 0) {
+                errorRate = (errorCount / totalCalls) * 100;
+            }
+
+            // Display error rate
+            document.getElementById("error-rate").textContent = `${errorCount}/${totalCalls} (${errorRate.toFixed(2)}%)`;
+
+            // Display top 3 error endpoints
+            const errorEndpointList = document.getElementById("top-error-endpoints");
+            errorEndpointList.innerHTML = '';  // Clear previous data
+            errorResult.top_error_endpoints.forEach(endpoint => {
+                const entry = document.createElement('div');
+                entry.classList.add('text-sm', 'text-gray-600');
+                entry.innerHTML = `<span class="font-semibold">${endpoint.endpoint}:</span> ${endpoint.errors} errors`;
+                errorEndpointList.appendChild(entry);
+            });
+        } catch (error) {
+            console.error("Error fetching error rate:", error);
+        }
+    }
+
+
+
+
+    async function fetchPerformanceData() {
+      try {
+        const response = await fetch('http://192.168.1.17:5003/api/performance');
+        const result = await response.json();
+        const data = result.tables[0].rows;
+
+        // Calculate the average response time
+        const totalResponseTime = data.reduce((acc, row) => acc + row[2], 0); // row[2] is the avgResponseTime
+        const avgResponseTime = totalResponseTime / data.length;
+
+        document.getElementById("avg-response-time").textContent = avgResponseTime.toFixed(2) + " ms";
+      } catch (error) {
+        console.error("Error fetching performance data:", error);
+      }
+    }
+
+
+    async function fetchTrafficData() {
+      try {
+        const response = await fetch('http://192.168.1.17:5003/api/traffic');
+        const result = await response.json();
+
+        console.log('Fetched traffic data:', result);
+
+        if (result && result.tables && result.tables[0] && result.tables[0].rows) {
+          const data = result.tables[0].rows;
+
+          // Filter out rows where the client_CountryOrRegion (first column) is empty
+          const filteredData = data.filter(row => row[0] !== "");
+
+          if (filteredData.length === 0) {
+            console.error("No valid data after filtering.");
+            return;
+          }
+
+          const labels = filteredData.map(row => row[0]);  // Country (e.g., United States, United Kingdom)
+          const values = filteredData.map(row => row[2]);  // Request count
+
+          // Calculate percentages
+          const totalRequests = values.reduce((acc, value) => acc + value, 0);
+          const percentages = values.map(value => ((value / totalRequests) * 100).toFixed(2));
+
+          const ctx = document.getElementById("trafficChart").getContext("2d");
+
+          if (window.trafficSourceChartInstance) {
+            window.trafficSourceChartInstance.data.labels = labels;
+            window.trafficSourceChartInstance.data.datasets[0].data = values;
+            window.trafficSourceChartInstance.update();
+          } else {
+            window.trafficSourceChartInstance = new Chart(ctx, {
+              type: "pie",
+              data: {
+                labels: labels,
+                datasets: [{
+                  data: values,
+                  backgroundColor: ["#ff6f61", "#6fbbff", "#ffca3a", "#2a9d8f"],
+                }]
+              },
+              options: {
+                responsive: true,
+                plugins: {
+                  tooltip: {
+                    callbacks: {
+                      label: function (tooltipItem) {
+                        const percentage = percentages[tooltipItem.dataIndex];
+                        return `${tooltipItem.label}: ${tooltipItem.raw} requests (${percentage}%)`;
+                      }
+                    }
+                  },
+                  legend: {
+                    position: "top",
+                  }
+                }
+              }
+            });
+          }
+        } else {
+          console.error('Invalid traffic data structure');
+        }
+      } catch (error) {
+        console.error("Error fetching traffic data:", error);
+      }
+    }
+
+    async function fetchAPIUsageStats() {
+      try {
+        const response = await fetch('http://192.168.1.17:5003/api/usage_stats');
+        const result = await response.json();
+        // Example: Display total calls in last 30 days
+        let total = 0;
+        result.stats.forEach(row => { total += row.count; });
+        // You can display this in a new card or section
+        // Example: document.getElementById('total-30d-calls').textContent = total;
+
+        // Example: Group by API key/product and display top 5
+        const grouped = {};
+        result.stats.forEach(row => {
+          const key = row.api_key + ' | ' + row.product;
+          if (!grouped[key]) grouped[key] = 0;
+          grouped[key] += row.count;
+        });
+        const topKeys = Object.entries(grouped)
+          .map(([k, v]) => ({ key: k, count: v }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+        // Example: Display in a div with id="api-usage-list"
+        const usageList = document.getElementById('api-usage-list');
+        if (usageList) {
+          usageList.innerHTML = '';
+          topKeys.forEach(item => {
+            const entry = document.createElement('div');
+            entry.classList.add('text-sm', 'text-gray-600');
+            entry.innerHTML = `<span class="font-semibold">${item.key}:</span> ${item.count} calls`;
+            usageList.appendChild(entry);
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching API usage stats:', error);
+      }
+    }
+
+    // Refresh function to fetch data on button click
+    function refreshData() {
+      fetchInsights();
+      fetchErrorRate();
+      fetchPerformanceData();
+      fetchTrafficData();
+      fetchAPIUsageStats();
+    }
+
+    // Set interval for automatic data refresh (every 10 minutes)
+    setInterval(refreshData, 600000); 
+    refreshData();
+
+    function connectWatchdogStream(url, onData) {
+      let source = new EventSource(url);
+      source.addEventListener("file_event", function (event) {
+        try {
+          const data = JSON.parse(event.data);
+          onData(data);
+        } catch (e) {
+          console.error("Watchdog parse error:", event.data);
+        }
+      });
+      source.onerror = () => setTimeout(() => connectWatchdogStream(url, onData), 3000);
+    }
+
+    function connectAPIHealthStream(url, onData) {
+      let source = new EventSource(url);
+      source.onmessage = function (event) {
+        try {
+          const data = JSON.parse(event.data);
+          onData(data);
+        } catch (e) {
+          console.error("API Health parse error:", event.data);
+        }
+      };
+      source.onerror = () => setTimeout(() => connectAPIHealthStream(url, onData), 3000);
+    }
+
+    function connectToFTPStream(url, onData) {
+      let source = new EventSource(url);
+      source.addEventListener("ftp_event", function (event) {
+        try {
+          const data = JSON.parse(event.data);
+          onData(data);
+        } catch (e) {
+          console.error("FTP parse error:", event.data);
+        }
+      });
+      source.addEventListener("time", function (event) {
+        try {
+          const data = JSON.parse(event.data);
+          onData(data);
+        } catch (e) {
+          console.error("FTP time event parse error:", event.data);
+        }
+      });
+      source.onerror = () => setTimeout(() => connectToFTPStream(url, onData), 3000);
+    }
+
+    function handleAPIUpdate(data) {
+      if (data.type === 'api_check') {
+        const log = document.getElementById('api-health-log');
+        const entry = document.createElement('div');
+        const statusColor = data.status === 'HTTP 200' ? 'text-green-600' : 'text-red-600';
+        entry.innerHTML = `
+          <div class="border-b border-gray-100 pb-2">
+            <p class="font-medium">${data.endpoint}</p>
+            <p class="${statusColor}">${data.status}</p>
+            <p class="text-xs text-gray-400">${formatTimestamp(data.timestamp)}</p>
+          </div>`;
+        log.prepend(entry);
+        while (log.childElementCount > 20) log.removeChild(log.lastChild);
+      }
+    }
+
+    function handleWatchdogEvent(data) {
+      const log = document.getElementById('watchdog-log');
+      const heartbeat = document.getElementById('watchdog-heartbeat');
+      if (data.status === 'monitoring_heartbeat') {
+        heartbeat.textContent = formatTimestamp(data.timestamp);
+        return;
+      }
+      if (data.status === 'new_file') return;
+      const entry = document.createElement('div');
+      const color =
+        data.status === 'success' ? 'text-green-600' :
+        data.status === 'modified_file' ? 'text-yellow-600' :
+        data.status === 'ignored' ? 'text-gray-400' :
+        'text-red-600';
+      entry.innerHTML = `
+        <div class="border-b border-gray-100 pb-2">
+          <p class="font-medium ${color}">${data.status.replace('_', ' ')}</p>
+          <p class="text-gray-600 truncate">${data.file || '(No file)'}</p>
+          <p class="text-xs text-gray-400">${formatTimestamp(data.timestamp)}</p>
+        </div>`;
+      log.prepend(entry);
+      while (log.childElementCount > 20) log.removeChild(log.lastChild);
+    }
+
+    function handleFTPEvent(data) {
+      const authEl = document.getElementById("ftp-auth-time");
+      const log = document.getElementById("ftp-script-log");
+      if (data.status === "authenticated" || data.status === "not_authenticated") {
+        authEl.textContent = formatTimestamp(data.timestamp);
+        authEl.className = data.status === "authenticated" ? "text-green-600 font-mono text-sm" : "text-red-600 font-mono text-sm";
+        return;
+      }
+      const entry = document.createElement('div');
+      const color = data.status === "script_ran" ? "text-green-600" : "text-red-600";
+      entry.innerHTML = `
+        <div class="border-b border-gray-100 pb-2">
+          <p class="font-medium ${color}">${data.message}</p>
+          <p class="text-xs text-gray-400">${formatTimestamp(data.timestamp)}</p>
+        </div>`;
+      log.prepend(entry);
+      while (log.childElementCount > 20) log.removeChild(log.lastChild);
+    }
+
+    connectAPIHealthStream("http://192.168.1.17:5002/stream", handleAPIUpdate);
+    connectWatchdogStream("http://192.168.1.17:5001/stream", handleWatchdogEvent);
+    connectToFTPStream("http://192.168.1.17:5000/stream", handleFTPEvent);
+  </script>
+</body>
+</html>
