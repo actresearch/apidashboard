@@ -28,6 +28,8 @@ instance/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/

@@ -1,4 +1,6 @@
-from flask import Flask, render_template, jsonify, request
+import os
+
+from flask import Flask, render_template, jsonify
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
@@ -11,6 +13,11 @@ api_call_log = [
 @app.route('/')
 def dashboard():
     return render_template('index.html')
+
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
 
 @app.route('/api/usage_stats')
 def api_usage_stats():
@@ -43,4 +50,9 @@ def api_usage_stats():
     return jsonify({"stats": result})
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0",debug=True, threaded=True, port=5005)
+    app.run(
+        host="0.0.0.0",
+        debug=os.getenv("FLASK_DEBUG", "0") == "1",
+        threaded=True,
+        port=int(os.getenv("APP_PORT", "5005")),
+    )
