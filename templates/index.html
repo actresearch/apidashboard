@@ -394,7 +394,10 @@
           console.error("API Health parse error:", event.data);
         }
       };
-      source.onerror = () => setTimeout(() => connectAPIHealthStream(url, onData), 3000);
+      source.onerror = () => {
+        source.close();
+        setTimeout(() => connectAPIHealthStream(url, onData), 3000);
+      };
     }
 
     function connectToFTPStream(url, onData) {
@@ -419,6 +422,11 @@
     }
 
     function handleAPIUpdate(data) {
+      if (data.type === 'api_snapshot' && Array.isArray(data.results)) {
+        data.results.forEach(handleAPIUpdate);
+        return;
+      }
+
       if (data.type === 'api_check') {
         const log = document.getElementById('api-health-log');
         const entry = document.createElement('div');
