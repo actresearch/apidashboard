@@ -10,6 +10,10 @@ API_HEALTH_STREAM_URL = os.getenv(
     "API_HEALTH_STREAM_URL",
     "http://192.168.1.17:5002/stream",
 )
+WATCHDOG_STREAM_URL = os.getenv(
+    "WATCHDOG_STREAM_URL",
+    "http://192.168.1.17:8001/stream",
+)
 
 # Dummy in-memory log for demonstration (replace with your real data source)
 api_call_log = [
@@ -28,10 +32,19 @@ def health():
 
 @app.route('/api-health/stream')
 def api_health_stream():
+    return stream_proxy(API_HEALTH_STREAM_URL)
+
+
+@app.route('/watchdog/stream')
+def watchdog_stream():
+    return stream_proxy(WATCHDOG_STREAM_URL)
+
+
+def stream_proxy(upstream_url):
     def relay_stream():
         while True:
             try:
-                with urllib.request.urlopen(API_HEALTH_STREAM_URL, timeout=70) as upstream:
+                with urllib.request.urlopen(upstream_url, timeout=70) as upstream:
                     for line in upstream:
                         yield line
             except (urllib.error.URLError, TimeoutError, OSError) as e:

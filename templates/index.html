@@ -381,7 +381,18 @@
           console.error("Watchdog parse error:", event.data);
         }
       });
-      source.onerror = () => setTimeout(() => connectWatchdogStream(url, onData), 3000);
+      source.onmessage = function (event) {
+        try {
+          const data = JSON.parse(event.data);
+          onData(data);
+        } catch (e) {
+          console.error("Watchdog message parse error:", event.data);
+        }
+      };
+      source.onerror = () => {
+        source.close();
+        setTimeout(() => connectWatchdogStream(url, onData), 3000);
+      };
     }
 
     function connectAPIHealthStream(url, onData) {
@@ -486,7 +497,7 @@
     }
 
     connectAPIHealthStream("/api-health/stream", handleAPIUpdate);
-    connectWatchdogStream("http://192.168.1.17:5001/stream", handleWatchdogEvent);
+    connectWatchdogStream("/watchdog/stream", handleWatchdogEvent);
     connectToFTPStream("http://192.168.1.17:5000/stream", handleFTPEvent);
   </script>
 </body>
