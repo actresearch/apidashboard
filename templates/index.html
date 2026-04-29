@@ -485,7 +485,7 @@
       while (log.childElementCount > 20) log.removeChild(log.lastChild);
     }
 
-    connectAPIHealthStream("http://192.168.1.17:5002/stream", handleAPIUpdate);
+    connectAPIHealthStream("/api-health/stream", handleAPIUpdate);
     connectWatchdogStream("http://192.168.1.17:5001/stream", handleWatchdogEvent);
     connectToFTPStream("http://192.168.1.17:5000/stream", handleFTPEvent);
   </script>

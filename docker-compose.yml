@@ -8,6 +8,7 @@ services:
     environment:
       APP_PORT: 5005
       FLASK_DEBUG: "0"
+      API_HEALTH_STREAM_URL: ${API_HEALTH_STREAM_URL:-http://192.168.1.17:5002/stream}
     volumes:
       - ${DASHBOARD_LOG_PATH:-/opt/api-dashboard/logs}:/app/logs
     healthcheck:
