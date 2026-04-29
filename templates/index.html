@@ -373,22 +373,17 @@
 
     function connectWatchdogStream(url, onData) {
       let source = new EventSource(url);
-      source.addEventListener("file_event", function (event) {
+      const handleWatchdogMessage = function (event) {
         try {
           const data = JSON.parse(event.data);
           onData(data);
         } catch (e) {
           console.error("Watchdog parse error:", event.data);
         }
-      });
-      source.onmessage = function (event) {
-        try {
-          const data = JSON.parse(event.data);
-          onData(data);
-        } catch (e) {
-          console.error("Watchdog message parse error:", event.data);
-        }
       };
+      source.addEventListener("file_event", handleWatchdogMessage);
+      source.addEventListener("system_event", handleWatchdogMessage);
+      source.onmessage = handleWatchdogMessage;
       source.onerror = () => {
         source.close();
         setTimeout(() => connectWatchdogStream(url, onData), 3000);
@@ -456,7 +451,7 @@
     function handleWatchdogEvent(data) {
       const log = document.getElementById('watchdog-log');
       const heartbeat = document.getElementById('watchdog-heartbeat');
-      if (data.status === 'monitoring_heartbeat') {
+      if (data.status === 'monitoring_heartbeat' || data.status === 'monitoring_active') {
         heartbeat.textContent = formatTimestamp(data.timestamp);
         return;
       }
