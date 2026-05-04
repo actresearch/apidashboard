@@ -1,5 +1,7 @@
 import os
+import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from flask import Flask, Response, render_template, jsonify, stream_with_context
@@ -14,11 +16,10 @@ WATCHDOG_STREAM_URL = os.getenv(
     "WATCHDOG_STREAM_URL",
     "http://192.168.1.17:8001/stream",
 )
-
-# Dummy in-memory log for demonstration (replace with your real data source)
-api_call_log = [
-    # Example: {"timestamp": datetime(2025, 7, 1, 12, 0), "api_key": "abc123", "product": "ProductA"}
-]
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_LOG_TIMESTAMP_COLUMN = os.getenv("SUPABASE_LOG_TIMESTAMP_COLUMN", "created_at")
+SUPABASE_PAGE_SIZE = int(os.getenv("SUPABASE_PAGE_SIZE", "1000"))
 
 @app.route('/')
 def dashboard():
@@ -62,33 +63,67 @@ def stream_proxy(upstream_url):
 
 @app.route('/api/usage_stats')
 def api_usage_stats():
-    """
-    Returns API usage stats for the last 30 days, grouped by day and API key/product.
-    Example output:
-    {
-      "stats": [
-        {"date": "2025-07-01", "api_key": "abc123", "product": "ProductA", "count": 42},
-        ...
-      ]
-    }
-    """
-    now = datetime.utcnow()
-    start_date = now - timedelta(days=30)
-    # Filter log for last 30 days
-    filtered = [entry for entry in api_call_log if entry["timestamp"] >= start_date]
-    # Aggregate
-    stats = {}
-    for entry in filtered:
-        day = entry["timestamp"].strftime("%Y-%m-%d")
-        key = (day, entry["api_key"], entry.get("product", ""))
-        stats.setdefault(key, 0)
-        stats[key] += 1
-    # Format for output
-    result = [
-        {"date": k[0], "api_key": k[1], "product": k[2], "count": v}
-        for k, v in stats.items()
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return jsonify({"error": "Supabase environment variables are not configured"}), 500
+
+    start_date = (datetime.utcnow() - timedelta(days=30)).isoformat(timespec="seconds") + "Z"
+
+    try:
+        rows = fetch_supabase_usage_rows(start_date)
+    except Exception as e:
+        return jsonify({"error": f"Unable to load Supabase usage stats: {e}"}), 502
+
+    return jsonify({
+        "api_name_calls": rank_counts(rows, "api_name", "(missing api_name)"),
+        "product_id_calls": rank_counts(rows, "product_id", "(missing product_id)"),
+    })
+
+
+def fetch_supabase_usage_rows(start_date):
+    rows = []
+    offset = 0
+
+    while True:
+        batch = fetch_supabase_usage_page(start_date, offset, SUPABASE_PAGE_SIZE)
+        rows.extend(batch)
+
+        if len(batch) < SUPABASE_PAGE_SIZE:
+            return rows
+
+        offset += SUPABASE_PAGE_SIZE
+
+
+def fetch_supabase_usage_page(start_date, offset, limit):
+    query = urllib.parse.urlencode({
+        "select": "api_name,product_id",
+        SUPABASE_LOG_TIMESTAMP_COLUMN: f"gte.{start_date}",
+        "order": f"{SUPABASE_LOG_TIMESTAMP_COLUMN}.desc",
+        "offset": str(offset),
+        "limit": str(limit),
+    })
+    request = urllib.request.Request(
+        f"{SUPABASE_URL.rstrip('/')}/rest/v1/api_request_logs?{query}",
+        headers={
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Accept": "application/json",
+        },
+    )
+
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def rank_counts(rows, field, missing_label):
+    counts = {}
+    for row in rows:
+        key = row.get(field) or missing_label
+        counts[key] = counts.get(key, 0) + 1
+
+    return [
+        {"name": name, "count": count}
+        for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     ]
-    return jsonify({"stats": result})
 
 if __name__ == '__main__':
     app.run(

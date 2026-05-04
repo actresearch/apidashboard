@@ -101,10 +101,19 @@
     </div>
 
     <!-- API Usage Stats Section -->
-    <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5 mt-6">
-      <h2 class="text-xl font-semibold text-blue-700 mb-4">📊 API Usage Stats (Last 30 Days)</h2>
-      <div id="api-usage-list" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
-        <!-- API usage stats will be populated here -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">API Calls by Name (Last 30 Days)</h2>
+        <div id="api-name-usage-list" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
+          <!-- API name usage stats will be populated here -->
+        </div>
+      </div>
+
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">API Calls by Product ID (Last 30 Days)</h2>
+        <div id="product-id-usage-list" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
+          <!-- Product ID usage stats will be populated here -->
+        </div>
       </div>
     </div>
   </div>
@@ -323,39 +332,63 @@
 
     async function fetchAPIUsageStats() {
       try {
-        const response = await fetch('http://192.168.1.17:5003/api/usage_stats');
+        const response = await fetch('/api/usage_stats');
         const result = await response.json();
-        // Example: Display total calls in last 30 days
-        let total = 0;
-        result.stats.forEach(row => { total += row.count; });
-        // You can display this in a new card or section
-        // Example: document.getElementById('total-30d-calls').textContent = total;
 
-        // Example: Group by API key/product and display top 5
-        const grouped = {};
-        result.stats.forEach(row => {
-          const key = row.api_key + ' | ' + row.product;
-          if (!grouped[key]) grouped[key] = 0;
-          grouped[key] += row.count;
-        });
-        const topKeys = Object.entries(grouped)
-          .map(([k, v]) => ({ key: k, count: v }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 5);
-        // Example: Display in a div with id="api-usage-list"
-        const usageList = document.getElementById('api-usage-list');
-        if (usageList) {
-          usageList.innerHTML = '';
-          topKeys.forEach(item => {
-            const entry = document.createElement('div');
-            entry.classList.add('text-sm', 'text-gray-600');
-            entry.innerHTML = `<span class="font-semibold">${item.key}:</span> ${item.count} calls`;
-            usageList.appendChild(entry);
-          });
+        if (!response.ok) {
+          throw new Error(result.error || `Usage stats request failed with ${response.status}`);
         }
+
+        renderRankedUsageList('api-name-usage-list', result.api_name_calls || []);
+        renderRankedUsageList('product-id-usage-list', result.product_id_calls || []);
       } catch (error) {
         console.error('Error fetching API usage stats:', error);
+        renderUsageError('api-name-usage-list');
+        renderUsageError('product-id-usage-list');
       }
+    }
+
+    function renderRankedUsageList(elementId, rows) {
+      const list = document.getElementById(elementId);
+      if (!list) return;
+
+      list.innerHTML = '';
+
+      if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.classList.add('text-sm', 'text-gray-500');
+        empty.textContent = 'No calls in the last 30 days.';
+        list.appendChild(empty);
+        return;
+      }
+
+      rows.forEach((item, index) => {
+        const entry = document.createElement('div');
+        entry.classList.add('flex', 'items-center', 'justify-between', 'gap-4', 'text-sm', 'text-gray-600', 'border-b', 'border-gray-100', 'pb-2');
+
+        const label = document.createElement('div');
+        label.classList.add('min-w-0', 'flex-1', 'truncate');
+        label.textContent = `${index + 1}. ${item.name}`;
+
+        const count = document.createElement('div');
+        count.classList.add('font-semibold', 'text-gray-800', 'whitespace-nowrap');
+        count.textContent = `${item.count} calls`;
+
+        entry.appendChild(label);
+        entry.appendChild(count);
+        list.appendChild(entry);
+      });
+    }
+
+    function renderUsageError(elementId) {
+      const list = document.getElementById(elementId);
+      if (!list) return;
+
+      list.innerHTML = '';
+      const entry = document.createElement('div');
+      entry.classList.add('text-sm', 'text-red-600');
+      entry.textContent = 'Unable to load usage stats.';
+      list.appendChild(entry);
     }
 
     // Refresh function to fetch data on button click
