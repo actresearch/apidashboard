@@ -16,6 +16,10 @@ WATCHDOG_STREAM_URL = os.getenv(
     "WATCHDOG_STREAM_URL",
     "http://192.168.1.17:8001/stream",
 )
+FTP_STREAM_URL = os.getenv(
+    "FTP_STREAM_URL",
+    "http://192.168.1.17:5000/stream",
+)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SUPABASE_LOG_TIMESTAMP_COLUMN = os.getenv("SUPABASE_LOG_TIMESTAMP_COLUMN", "created_at")
@@ -39,6 +43,11 @@ def api_health_stream():
 @app.route('/watchdog/stream')
 def watchdog_stream():
     return stream_proxy(WATCHDOG_STREAM_URL)
+
+
+@app.route('/ftp/stream')
+def ftp_stream():
+    return stream_proxy(FTP_STREAM_URL)
 
 
 def stream_proxy(upstream_url):

@@ -526,7 +526,7 @@
 
     connectAPIHealthStream("/api-health/stream", handleAPIUpdate);
     connectWatchdogStream("/watchdog/stream", handleWatchdogEvent);
-    connectToFTPStream("http://192.168.1.17:5000/stream", handleFTPEvent);
+    connectToFTPStream("/ftp/stream", handleFTPEvent);
   </script>
 </body>
 </html>
