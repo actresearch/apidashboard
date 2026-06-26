@@ -21,10 +21,16 @@ Set these in the Portainer stack editor or in a stack env file:
 - `GHCR_IMAGE=ghcr.io/actresearch/apidashboard:latest`
 - `APP_PORT=5005`
 - `DASHBOARD_LOG_PATH=/opt/api-dashboard/logs`
+- `SUPABASE_URL=https://your-project.supabase.co`
+- `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
+- `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
+- `USAGE_STATS_CACHE_SECONDS=86400`
 
 Notes:
 
 - `DASHBOARD_LOG_PATH` should be an absolute path on the Docker host running Portainer.
+- `SUPABASE_SERVICE_ROLE_KEY` is a secret. Set it in Portainer; do not commit a real key to the repo.
+- Portainer stack environment values are used for compose substitution. `docker-compose.yml` must also list a value under the service `environment:` block for it to appear inside the container.
 - This app does not currently require Redis for the stack defined in this repo.
 
 ## Portainer Setup
@@ -39,6 +45,10 @@ Notes:
    - `GHCR_IMAGE=ghcr.io/actresearch/apidashboard:latest`
    - `APP_PORT=5005`
    - `DASHBOARD_LOG_PATH=/opt/api-dashboard/logs`
+   - `SUPABASE_URL=https://your-project.supabase.co`
+   - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
+   - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
+   - `USAGE_STATS_CACHE_SECONDS=86400`
 8. Deploy the stack.
 9. After the container starts, open `http://<your-server>:5005/health` and confirm it returns a healthy response.
 
@@ -87,6 +97,12 @@ Check:
 - `GHCR_IMAGE` exactly matches the published package path and tag
 
 This repo's workflow is already configured to publish `latest` from both `main` and `master`, which avoids the usual missing-tag problem.
+
+### Usage stats say Supabase environment variables are missing
+
+If the dashboard says `Supabase environment variables are not configured`, inspect the `api-dashboard` container details in Portainer.
+
+If `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are missing there, the values are defined in the Portainer stack but are not being injected into the service environment. Make sure `docker-compose.yml` includes them under `services.api-dashboard.environment`, then redeploy the stack.
 
 ## Quick Verification
 
