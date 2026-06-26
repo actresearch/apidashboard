@@ -75,12 +75,23 @@ def stream_proxy(upstream_url):
 @app.route('/api/usage_stats')
 def api_usage_stats():
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        return jsonify({"error": "Supabase environment variables are not configured"}), 500
+        return jsonify({
+            "error": "Supabase environment variables are not configured",
+            "setup_hint": "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY for the dashboard service.",
+        }), 500
 
     try:
         rows = fetch_supabase_usage_snapshot()
     except Exception as e:
-        return jsonify({"error": f"Unable to load Supabase usage stats: {e}"}), 502
+        return jsonify({
+            "error": "Unable to load Supabase usage stats",
+            "detail": str(e),
+            "snapshot_table": SUPABASE_USAGE_SNAPSHOT_TABLE,
+            "setup_hint": (
+                "Apply api_usage_stats_snapshot.sql in Supabase, run "
+                "select public.refresh_api_usage_stats_snapshot();, then restart the dashboard."
+            ),
+        }), 502
 
     payload = build_usage_snapshot_payload(rows)
     response = make_response(jsonify(payload))
@@ -108,8 +119,12 @@ def fetch_supabase_usage_snapshot():
         },
     )
 
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Supabase REST returned HTTP {e.code}: {body}") from e
 
 
 def build_usage_snapshot_payload(rows):

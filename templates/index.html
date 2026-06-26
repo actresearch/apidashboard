@@ -338,7 +338,9 @@
         const result = await response.json();
 
         if (!response.ok) {
-          throw new Error(result.error || `Usage stats request failed with ${response.status}`);
+          const detail = result.detail ? ` ${result.detail}` : '';
+          const hint = result.setup_hint ? ` ${result.setup_hint}` : '';
+          throw new Error(`${result.error || `Usage stats request failed with ${response.status}`}.${detail}${hint}`);
         }
 
         renderRankedUsageList('api-name-usage-list', result.api_name_calls || []);
@@ -346,8 +348,8 @@
         renderUsageFreshness(result);
       } catch (error) {
         console.error('Error fetching API usage stats:', error);
-        renderUsageError('api-name-usage-list');
-        renderUsageError('product-id-usage-list');
+        renderUsageError('api-name-usage-list', error.message);
+        renderUsageError('product-id-usage-list', error.message);
         renderUsageFreshness(null);
       }
     }
@@ -384,14 +386,14 @@
       });
     }
 
-    function renderUsageError(elementId) {
+    function renderUsageError(elementId, message) {
       const list = document.getElementById(elementId);
       if (!list) return;
 
       list.innerHTML = '';
       const entry = document.createElement('div');
       entry.classList.add('text-sm', 'text-red-600');
-      entry.textContent = 'Unable to load usage stats.';
+      entry.textContent = message || 'Unable to load usage stats.';
       list.appendChild(entry);
     }
 
