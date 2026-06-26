@@ -4,8 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from flask import Flask, Response, render_template, jsonify, stream_with_context
-from datetime import datetime, timedelta
+from flask import Flask, Response, render_template, jsonify, make_response, stream_with_context
 
 app = Flask(__name__)
 API_HEALTH_STREAM_URL = os.getenv(
@@ -22,8 +21,11 @@ FTP_STREAM_URL = os.getenv(
 )
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_LOG_TIMESTAMP_COLUMN = os.getenv("SUPABASE_LOG_TIMESTAMP_COLUMN", "created_at")
-SUPABASE_PAGE_SIZE = int(os.getenv("SUPABASE_PAGE_SIZE", "1000"))
+SUPABASE_USAGE_SNAPSHOT_TABLE = os.getenv(
+    "SUPABASE_USAGE_SNAPSHOT_TABLE",
+    "api_usage_stats_snapshot",
+)
+USAGE_STATS_CACHE_SECONDS = int(os.getenv("USAGE_STATS_CACHE_SECONDS", "86400"))
 
 @app.route('/')
 def dashboard():
@@ -75,43 +77,30 @@ def api_usage_stats():
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return jsonify({"error": "Supabase environment variables are not configured"}), 500
 
-    start_date = (datetime.utcnow() - timedelta(days=30)).isoformat(timespec="seconds") + "Z"
-
     try:
-        rows = fetch_supabase_usage_rows(start_date)
+        rows = fetch_supabase_usage_snapshot()
     except Exception as e:
         return jsonify({"error": f"Unable to load Supabase usage stats: {e}"}), 502
 
-    return jsonify({
-        "api_name_calls": rank_counts(rows, "api_name", "(missing api_name)"),
-        "product_id_calls": rank_counts(rows, "product_id", "(missing product_id)"),
-    })
+    payload = build_usage_snapshot_payload(rows)
+    response = make_response(jsonify(payload))
+    response.headers["Cache-Control"] = (
+        f"private, max-age={USAGE_STATS_CACHE_SECONDS}, "
+        f"stale-while-revalidate={USAGE_STATS_CACHE_SECONDS}"
+    )
+    return response
 
 
-def fetch_supabase_usage_rows(start_date):
-    rows = []
-    offset = 0
-
-    while True:
-        batch = fetch_supabase_usage_page(start_date, offset, SUPABASE_PAGE_SIZE)
-        rows.extend(batch)
-
-        if len(batch) < SUPABASE_PAGE_SIZE:
-            return rows
-
-        offset += SUPABASE_PAGE_SIZE
-
-
-def fetch_supabase_usage_page(start_date, offset, limit):
-    query = urllib.parse.urlencode({
-        "select": "api_name,product_id",
-        SUPABASE_LOG_TIMESTAMP_COLUMN: f"gte.{start_date}",
-        "order": f"{SUPABASE_LOG_TIMESTAMP_COLUMN}.desc",
-        "offset": str(offset),
-        "limit": str(limit),
-    })
+def fetch_supabase_usage_snapshot():
+    query = urllib.parse.urlencode(
+        {
+            "select": "dimension,name,call_count,window_start,window_end,refreshed_at",
+            "order": "call_count.desc,name.asc",
+        }
+    )
+    snapshot_table = urllib.parse.quote(SUPABASE_USAGE_SNAPSHOT_TABLE.strip("/"), safe="")
     request = urllib.request.Request(
-        f"{SUPABASE_URL.rstrip('/')}/rest/v1/api_request_logs?{query}",
+        f"{SUPABASE_URL.rstrip('/')}/rest/v1/{snapshot_table}?{query}",
         headers={
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
@@ -123,16 +112,36 @@ def fetch_supabase_usage_page(start_date, offset, limit):
         return json.loads(response.read().decode("utf-8"))
 
 
-def rank_counts(rows, field, missing_label):
-    counts = {}
-    for row in rows:
-        key = row.get(field) or missing_label
-        counts[key] = counts.get(key, 0) + 1
+def build_usage_snapshot_payload(rows):
+    api_name_calls = []
+    product_id_calls = []
+    refreshed_at = None
+    window_start = None
+    window_end = None
 
-    return [
-        {"name": name, "count": count}
-        for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    ]
+    for row in rows:
+        item = {
+            "name": row.get("name"),
+            "count": row.get("call_count", 0),
+        }
+
+        dimension = row.get("dimension")
+        if dimension == "api_name":
+            api_name_calls.append(item)
+        elif dimension == "product_id":
+            product_id_calls.append(item)
+
+        refreshed_at = refreshed_at or row.get("refreshed_at")
+        window_start = window_start or row.get("window_start")
+        window_end = window_end or row.get("window_end")
+
+    return {
+        "api_name_calls": api_name_calls,
+        "product_id_calls": product_id_calls,
+        "refreshed_at": refreshed_at,
+        "window_start": window_start,
+        "window_end": window_end,
+    }
 
 if __name__ == '__main__':
     app.run(

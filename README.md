@@ -9,6 +9,7 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 - **Live Streaming Data**: Real-time updates for API health, watchdog activity, and FTP automations
 - **Responsive Design**: Modern UI built with Tailwind CSS
 - **24-hour and 30-day Analytics**: Comprehensive usage statistics and trends
+- **Efficient API Usage Snapshot**: 30-day Supabase usage rankings are read from a small daily aggregate instead of raw log rows
 
 ## Dashboard Components
 
@@ -62,13 +63,32 @@ The dashboard connects to various API endpoints for data:
 - Error monitoring: `http://192.168.1.17:5003/api/error_rate`
 - Performance metrics: `http://192.168.1.17:5003/api/performance`
 - Traffic analytics: `http://192.168.1.17:5003/api/traffic`
-- Usage statistics: `http://192.168.1.17:5003/api/usage_stats`
+- Usage statistics: local `/api/usage_stats`, backed by Supabase `api_usage_stats_snapshot`
 
 Update these endpoints in `templates/index.html` to match your API configuration.
+
+### Supabase usage snapshot setup
+
+The usage rankings should update no more than once per day. Do not point the dashboard at raw `api_request_logs` rows; that causes high Supabase egress as the table grows.
+
+1. Apply [api_usage_stats_snapshot.sql](api_usage_stats_snapshot.sql) in the Supabase SQL Editor or your normal migration process.
+2. Run the initial refresh:
+   ```sql
+   select public.refresh_api_usage_stats_snapshot();
+   ```
+3. Schedule the same refresh once daily. The SQL file includes an optional `pg_cron` snippet for `06:05 UTC`.
+4. Configure the dashboard with:
+   ```bash
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot
+   USAGE_STATS_CACHE_SECONDS=86400
+   ```
 
 ## Features Overview
 
 - **Auto-refresh**: Data refreshes every 10 minutes automatically
+- **Usage stats caching**: 30-day usage rankings load from the daily Supabase snapshot once per page load
 - **Manual refresh**: Click the refresh button for immediate updates
 - **Responsive design**: Works on desktop and mobile devices
 - **Real-time streaming**: Live updates without page refresh
