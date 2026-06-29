@@ -74,9 +74,14 @@
       <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
         <h2 class="text-xl font-semibold text-blue-700 mb-4">👁 Watchdog Activity</h2>
 
-        <div class="mb-4">
+        <div class="mb-4 space-y-3">
           <p class="text-gray-500 text-sm">Last Heartbeat:</p>
           <p id="watchdog-heartbeat" class="text-green-600 font-mono text-sm">Waiting...</p>
+          <div>
+            <p class="text-gray-500 text-sm">Worker Health:</p>
+            <p id="watchdog-worker-health" class="text-gray-500 font-mono text-sm">Waiting...</p>
+            <p id="watchdog-worker-health-details" class="text-xs text-gray-500 mt-1"></p>
+          </div>
         </div>
 
         <div id="watchdog-log" class="space-y-2 text-sm max-h-[400px] overflow-y-auto">
@@ -129,6 +134,19 @@
 
     function formatK(num) {
       return num >= 1000 ? (num / 1000).toFixed(2) + 'k' : num.toString();
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatStatus(status) {
+      return String(status || '').replace(/_/g, ' ');
     }
 
     async function fetchInsights() {
@@ -511,21 +529,44 @@
     function handleWatchdogEvent(data) {
       const log = document.getElementById('watchdog-log');
       const heartbeat = document.getElementById('watchdog-heartbeat');
+      const workerHealth = document.getElementById('watchdog-worker-health');
+      const workerHealthDetails = document.getElementById('watchdog-worker-health-details');
+
       if (data.status === 'monitoring_heartbeat' || data.status === 'monitoring_active') {
         heartbeat.textContent = formatTimestamp(data.timestamp);
+        heartbeat.className = 'text-green-600 font-mono text-sm';
         return;
       }
+
+      if (data.status === 'worker_health_ok' || data.status === 'worker_health_failed') {
+        const isHealthy = data.status === 'worker_health_ok';
+        workerHealth.textContent = `${isHealthy ? 'Healthy' : 'Failed'} at ${formatTimestamp(data.timestamp)}`;
+        workerHealth.className = isHealthy ? 'text-green-600 font-mono text-sm' : 'text-red-600 font-mono text-sm';
+
+        const errors = Array.isArray(data.errors) ? data.errors : [];
+        const missingMounts = Array.isArray(data.missing_mounts) ? data.missing_mounts : [];
+        if (isHealthy) {
+          workerHealthDetails.textContent = 'Redis, Azure, mounts, scheduled folders, and observer checked.';
+          workerHealthDetails.className = 'text-xs text-gray-500 mt-1';
+        } else {
+          const details = [...errors, ...missingMounts.map(path => `Missing mount: ${path}`)];
+          workerHealthDetails.textContent = details.length ? details.join(' | ') : 'Worker self-test failed.';
+          workerHealthDetails.className = 'text-xs text-red-600 mt-1';
+        }
+      }
+
       if (data.status === 'new_file') return;
       const entry = document.createElement('div');
       const color =
-        data.status === 'success' ? 'text-green-600' :
+        data.status === 'success' || data.status === 'worker_health_ok' ? 'text-green-600' :
         data.status === 'modified_file' ? 'text-yellow-600' :
         data.status === 'ignored' ? 'text-gray-400' :
         'text-red-600';
+      const detail = data.file || data.error || (Array.isArray(data.errors) ? data.errors.join(' | ') : '') || data.folder || data.azure_path || '(No file)';
       entry.innerHTML = `
         <div class="border-b border-gray-100 pb-2">
-          <p class="font-medium ${color}">${data.status.replace('_', ' ')}</p>
-          <p class="text-gray-600 truncate">${data.file || '(No file)'}</p>
+          <p class="font-medium ${color}">${escapeHtml(formatStatus(data.status))}</p>
+          <p class="text-gray-600 truncate">${escapeHtml(detail)}</p>
           <p class="text-xs text-gray-400">${formatTimestamp(data.timestamp)}</p>
         </div>`;
       log.prepend(entry);
