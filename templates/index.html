@@ -18,7 +18,7 @@
     <div class="flex justify-between items-center mb-8">
       <h1 class="text-4xl font-bold text-blue-800">🧩 API Monitoring Dashboard</h1>
       <div class="flex items-center gap-3">
-        <span class="text-xs font-semibold uppercase text-gray-500">All times EST</span>
+        <span class="text-xs font-semibold uppercase text-gray-500">All times ET</span>
         <button onclick="fetchInsights()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">🔄 Refresh</button>
       </div>
     </div>
@@ -129,11 +129,18 @@
   </div>
 
   <script>
-    const DASHBOARD_TIME_ZONE = 'Etc/GMT+5';
-    const DASHBOARD_TIME_ZONE_LABEL = 'EST';
+    const DASHBOARD_TIME_ZONE = 'America/New_York';
+    const DASHBOARD_TIME_ZONE_LABEL = 'ET';
+
+    function parseDashboardTimestamp(value) {
+      if (!value) return new Date(NaN);
+      const timestamp = String(value).trim();
+      const hasExplicitOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp);
+      return new Date(hasExplicitOffset ? timestamp : `${timestamp}Z`);
+    }
 
     function formatTimestamp(isoString) {
-      const date = new Date(isoString);
+      const date = parseDashboardTimestamp(isoString);
       if (Number.isNaN(date.getTime())) return 'Unknown time';
       const options = {
         month: 'short',
@@ -146,7 +153,7 @@
     }
 
     function formatHourLabel(isoString) {
-      const date = new Date(isoString);
+      const date = parseDashboardTimestamp(isoString);
       if (Number.isNaN(date.getTime())) return '';
       return date.toLocaleString(undefined, {
         hour: '2-digit',
@@ -211,7 +218,7 @@
             });
 
             // Hourly Calls Chart (using just hour labels)
-            const sorted = result.endpoints.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).slice(-12);
+            const sorted = result.endpoints.sort((a, b) => parseDashboardTimestamp(a.timestamp) - parseDashboardTimestamp(b.timestamp)).slice(-12);
             const labels = sorted.map(row => formatHourLabel(row.timestamp));
             const values = sorted.map(row => row.count);
 
