@@ -71,6 +71,7 @@ class UsageStatsSnapshotTests(unittest.TestCase):
 
     def test_port_data_status_reads_status_file(self):
         original_path = dashboard_app.PORT_MONITOR_STATUS_PATH
+        original_url = dashboard_app.PORT_MONITOR_STATUS_URL
         payload = {
             "generated_at_utc": "2026-08-25T12:00:00+00:00",
             "port_count": 1,
@@ -82,15 +83,66 @@ class UsageStatsSnapshotTests(unittest.TestCase):
             status_path = pathlib.Path(directory) / "port_status.json"
             status_path.write_text(json.dumps(payload), encoding="utf-8")
             dashboard_app.PORT_MONITOR_STATUS_PATH = str(status_path)
+            dashboard_app.PORT_MONITOR_STATUS_URL = ""
 
             try:
                 client = dashboard_app.app.test_client()
                 response = client.get("/api/port_data_status")
             finally:
                 dashboard_app.PORT_MONITOR_STATUS_PATH = original_path
+                dashboard_app.PORT_MONITOR_STATUS_URL = original_url
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["ports"][0]["port"], "Savannah")
+
+    def test_port_data_status_post_requires_token(self):
+        original_token = dashboard_app.PORT_MONITOR_STATUS_TOKEN
+        dashboard_app.PORT_MONITOR_STATUS_TOKEN = ""
+
+        try:
+            client = dashboard_app.app.test_client()
+            response = client.post("/api/port_data_status", json={"ports": []})
+        finally:
+            dashboard_app.PORT_MONITOR_STATUS_TOKEN = original_token
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_port_data_status_post_saves_status_file(self):
+        original_path = dashboard_app.PORT_MONITOR_STATUS_PATH
+        original_token = dashboard_app.PORT_MONITOR_STATUS_TOKEN
+        payload = {
+            "generated_at_utc": "2026-08-25T12:00:00+00:00",
+            "port_count": 1,
+            "counts": {"ok": 1, "warning": 0, "error": 0, "other": 0},
+            "ports": [{"port": "Houston", "status": "ok"}],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = pathlib.Path(directory) / "port_status.json"
+            dashboard_app.PORT_MONITOR_STATUS_PATH = str(status_path)
+            dashboard_app.PORT_MONITOR_STATUS_TOKEN = "test-token"
+
+            try:
+                client = dashboard_app.app.test_client()
+                unauthorized = client.post(
+                    "/api/port_data_status",
+                    json=payload,
+                    headers={"X-Port-Monitor-Token": "wrong-token"},
+                )
+                response = client.post(
+                    "/api/port_data_status",
+                    json=payload,
+                    headers={"X-Port-Monitor-Token": "test-token"},
+                )
+            finally:
+                dashboard_app.PORT_MONITOR_STATUS_PATH = original_path
+                dashboard_app.PORT_MONITOR_STATUS_TOKEN = original_token
+
+            saved = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(saved["ports"][0]["port"], "Houston")
 
 
 if __name__ == "__main__":

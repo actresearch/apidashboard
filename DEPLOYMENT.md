@@ -23,6 +23,7 @@ Set these in the Portainer stack editor or in a stack env file:
 - `DASHBOARD_LOG_PATH=/opt/api-dashboard/logs`
 - `PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json`
 - `PORT_MONITOR_STATUS_URL=`
+- `PORT_MONITOR_STATUS_TOKEN=<shared-status-token>`
 - `SUPABASE_URL=https://your-project.supabase.co`
 - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
 - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -33,6 +34,7 @@ Notes:
 - `DASHBOARD_LOG_PATH` should be an absolute path on the Docker host running Portainer.
 - `PORT_MONITOR_STATUS_PATH` should point to the port monitor JSON status file inside the container. The default expects the file to be present in the mounted dashboard log directory.
 - `PORT_MONITOR_STATUS_URL` can point to an internal URL serving the JSON. If set, it takes precedence over `PORT_MONITOR_STATUS_PATH`.
+- `PORT_MONITOR_STATUS_TOKEN` is required if the port monitor POSTs status updates to `/api/port_data_status`.
 - `SUPABASE_SERVICE_ROLE_KEY` is a secret. Set it in Portainer; do not commit a real key to the repo.
 - Portainer stack environment values are used for compose substitution. `docker-compose.yml` must also list a value under the service `environment:` block for it to appear inside the container.
 - This app does not currently require Redis for the stack defined in this repo.
@@ -51,6 +53,7 @@ Notes:
    - `DASHBOARD_LOG_PATH=/opt/api-dashboard/logs`
    - `PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json`
    - `PORT_MONITOR_STATUS_URL=`
+   - `PORT_MONITOR_STATUS_TOKEN=<shared-status-token>`
    - `SUPABASE_URL=https://your-project.supabase.co`
    - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
    - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -116,6 +119,8 @@ If `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are missing there, the values 
 If `/ports` says the port monitor status file is missing, confirm the daily port monitor is writing `Major US Port Data Monitor.status.json` and that the file is available inside the container at `PORT_MONITOR_STATUS_PATH`.
 
 For the default compose settings, copy or sync the JSON into the host directory configured by `DASHBOARD_LOG_PATH`, which appears in the container as `/app/logs`. As an alternative, serve the JSON internally and set `PORT_MONITOR_STATUS_URL`.
+
+When the dashboard is hosted on a different machine than the port monitor, set `status_publish_url` in the port monitor config to `http://<dashboard-host>:5005/api/port_data_status` and set the same `PORT_MONITOR_STATUS_TOKEN` in both environments. The dashboard stores posted updates at `PORT_MONITOR_STATUS_PATH`.
 
 ## Quick Verification
 

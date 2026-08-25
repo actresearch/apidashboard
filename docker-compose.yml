@@ -17,6 +17,7 @@ services:
       USAGE_STATS_CACHE_SECONDS: ${USAGE_STATS_CACHE_SECONDS:-86400}
       PORT_MONITOR_STATUS_PATH: ${PORT_MONITOR_STATUS_PATH:-/app/logs/Major US Port Data Monitor.status.json}
       PORT_MONITOR_STATUS_URL: ${PORT_MONITOR_STATUS_URL:-}
+      PORT_MONITOR_STATUS_TOKEN: ${PORT_MONITOR_STATUS_TOKEN:-}
     volumes:
       - ${DASHBOARD_LOG_PATH:-/opt/api-dashboard/logs}:/app/logs
     healthcheck:

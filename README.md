@@ -84,6 +84,8 @@ Make the generated JSON visible inside the dashboard container by copying or syn
 
 Alternatively, set `PORT_MONITOR_STATUS_URL` to an internal URL that serves the same JSON. When that variable is set, the dashboard reads from the URL instead of the file path.
 
+For a dashboard hosted on a different machine, configure the port monitor to POST status updates to `/api/port_data_status`. Both the Windows port monitor environment and the dashboard container environment must set the same `PORT_MONITOR_STATUS_TOKEN`; do not commit the token.
+
 ### Supabase usage snapshot setup
 
 The usage rankings should update no more than once per day. Do not point the dashboard at raw `api_request_logs` rows; that causes high Supabase egress as the table grows.

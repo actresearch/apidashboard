@@ -4,7 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from flask import Flask, Response, render_template, jsonify, make_response, stream_with_context
+from flask import Flask, Response, render_template, jsonify, make_response, request, stream_with_context
 
 app = Flask(__name__)
 API_HEALTH_STREAM_URL = os.getenv(
@@ -31,6 +31,7 @@ PORT_MONITOR_STATUS_PATH = os.getenv(
     "/app/logs/Major US Port Data Monitor.status.json",
 )
 PORT_MONITOR_STATUS_URL = os.getenv("PORT_MONITOR_STATUS_URL")
+PORT_MONITOR_STATUS_TOKEN = os.getenv("PORT_MONITOR_STATUS_TOKEN", "")
 
 @app.route('/')
 def dashboard():
@@ -112,8 +113,10 @@ def api_usage_stats():
     return response
 
 
-@app.route('/api/port_data_status')
+@app.route('/api/port_data_status', methods=['GET', 'POST'])
 def port_data_status():
+    if request.method == 'POST':
+        return receive_port_monitor_status()
     try:
         return jsonify(load_port_monitor_status())
     except FileNotFoundError:
@@ -132,6 +135,33 @@ def port_data_status():
             "ports": [],
             "counts": {"ok": 0, "warning": 0, "error": 0, "other": 0},
         }), 502
+
+
+def receive_port_monitor_status():
+    if not PORT_MONITOR_STATUS_TOKEN:
+        return jsonify({
+            "error": "Port monitor status posting is not configured",
+            "setup_hint": "Set PORT_MONITOR_STATUS_TOKEN in the dashboard environment before accepting posted status updates.",
+        }), 503
+    provided_token = request.headers.get("X-Port-Monitor-Token", "")
+    if provided_token != PORT_MONITOR_STATUS_TOKEN:
+        return jsonify({"error": "Invalid port monitor status token"}), 401
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Expected JSON object payload"}), 400
+    payload = normalize_port_monitor_status(payload)
+
+    directory = os.path.dirname(PORT_MONITOR_STATUS_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(PORT_MONITOR_STATUS_PATH, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    return jsonify({
+        "status": "saved",
+        "status_path": PORT_MONITOR_STATUS_PATH,
+        "port_count": len(payload.get("ports", [])),
+    })
 
 
 def load_port_monitor_status():
