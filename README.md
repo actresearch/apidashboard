@@ -7,6 +7,7 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 - **Real-time API Analytics**: Monitor API calls, error rates, and performance metrics
 - **Interactive Charts**: Visualize hourly API calls and traffic sources using Chart.js
 - **Live Streaming Data**: Real-time updates for API health, watchdog activity, and FTP automations
+- **Port Data Status**: Operational view of the major-port data monitor status file
 - **Responsive Design**: Modern UI built with Tailwind CSS
 - **24-hour and 30-day Analytics**: Comprehensive usage statistics and trends
 - **Efficient API Usage Snapshot**: 30-day Supabase usage rankings are read from a small daily aggregate instead of raw log rows
@@ -27,6 +28,9 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 
 ### Analytics
 - **📊 API Usage Stats**: Top API consumers over the last 30 days
+
+### Port Data
+- **Port Data Status**: One row per tracked port with source status, failure detail, latest successful data month, last pull timestamp, latest TEUs, and source links.
 
 ## Technology Stack
 
@@ -64,8 +68,21 @@ The dashboard connects to various API endpoints for data:
 - Performance metrics: `http://192.168.1.17:5003/api/performance`
 - Traffic analytics: `http://192.168.1.17:5003/api/traffic`
 - Usage statistics: local `/api/usage_stats`, backed by Supabase `api_usage_stats_snapshot`
+- Port data status: local `/api/port_data_status`, backed by the JSON file from the port monitor
 
 Update these endpoints in `templates/index.html` to match your API configuration.
+
+### Port data status setup
+
+The port monitor writes `Major US Port Data Monitor.status.json` beside the Excel workbook. The dashboard reads that file from `PORT_MONITOR_STATUS_PATH`; in Docker, the default is:
+
+```bash
+PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json
+```
+
+Make the generated JSON visible inside the dashboard container by copying or syncing it into the host directory mounted as `DASHBOARD_LOG_PATH`, or by changing the bind mount and `PORT_MONITOR_STATUS_PATH` to the location where the file is available.
+
+Alternatively, set `PORT_MONITOR_STATUS_URL` to an internal URL that serves the same JSON. When that variable is set, the dashboard reads from the URL instead of the file path.
 
 ### Supabase usage snapshot setup
 
@@ -89,6 +106,7 @@ The usage rankings should update no more than once per day. Do not point the das
 
 - **Auto-refresh**: Data refreshes every 10 minutes automatically
 - **Usage stats caching**: 30-day usage rankings load from the daily Supabase snapshot once per page load
+- **Port status page**: `/ports` displays the latest port-monitor status JSON
 - **Manual refresh**: Click the refresh button for immediate updates
 - **Responsive design**: Works on desktop and mobile devices
 - **Real-time streaming**: Live updates without page refresh

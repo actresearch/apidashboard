@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Port Data Status</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-white text-gray-800 font-sans">
+  <div class="p-6 w-full mx-auto">
+    <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">
+      <div>
+        <a href="/" class="text-sm font-semibold text-blue-700 hover:text-blue-900">API Dashboard</a>
+        <h1 class="text-4xl font-bold text-blue-800 mt-1">Port Data Status</h1>
+        <p id="status-freshness" class="text-sm text-gray-500 mt-2">Loading status...</p>
+      </div>
+      <button onclick="fetchPortStatus()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">Refresh</button>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Ports OK</h2>
+        <p id="ports-ok" class="text-3xl font-bold text-green-700">-</p>
+      </div>
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Warnings</h2>
+        <p id="ports-warning" class="text-3xl font-bold text-yellow-700">-</p>
+      </div>
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Failures</h2>
+        <p id="ports-error" class="text-3xl font-bold text-red-700">-</p>
+      </div>
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Tracked Ports</h2>
+        <p id="ports-total" class="text-3xl font-bold text-blue-700">-</p>
+      </div>
+    </div>
+
+    <div id="status-error" class="hidden bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6 text-sm"></div>
+
+    <div class="bg-white border border-gray-200 shadow-md rounded-xl overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-blue-800 text-white">
+            <tr>
+              <th class="text-left font-semibold px-4 py-3">Port</th>
+              <th class="text-left font-semibold px-4 py-3">Status</th>
+              <th class="text-left font-semibold px-4 py-3">Failure Detail</th>
+              <th class="text-left font-semibold px-4 py-3">Last Successful New Data</th>
+              <th class="text-left font-semibold px-4 py-3">Last Data Pull</th>
+              <th class="text-right font-semibold px-4 py-3">Latest TEU</th>
+              <th class="text-left font-semibold px-4 py-3">Source</th>
+              <th class="text-left font-semibold px-4 py-3">Notes</th>
+            </tr>
+          </thead>
+          <tbody id="port-status-rows" class="divide-y divide-gray-100">
+            <tr>
+              <td colspan="8" class="px-4 py-6 text-center text-gray-500">Loading...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const DASHBOARD_TIME_ZONE = 'America/New_York';
+    const DASHBOARD_TIME_ZONE_LABEL = 'ET';
+
+    function parseDashboardTimestamp(value) {
+      if (!value) return new Date(NaN);
+      const timestamp = String(value).trim();
+      const hasExplicitOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp);
+      return new Date(hasExplicitOffset ? timestamp : `${timestamp}Z`);
+    }
+
+    function formatTimestamp(isoString) {
+      const date = parseDashboardTimestamp(isoString);
+      if (Number.isNaN(date.getTime())) return 'Unknown';
+      const options = {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: DASHBOARD_TIME_ZONE
+      };
+      return `${date.toLocaleString(undefined, options)} ${DASHBOARD_TIME_ZONE_LABEL}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatNumber(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      return Number(value).toLocaleString();
+    }
+
+    function statusClasses(status) {
+      if (status === 'ok') return 'bg-green-100 text-green-800';
+      if (status === 'warning') return 'bg-yellow-100 text-yellow-800';
+      if (status === 'error') return 'bg-red-100 text-red-800';
+      return 'bg-gray-100 text-gray-800';
+    }
+
+    function renderSourceLinks(sourceUrls) {
+      const urls = String(sourceUrls || '').split(';').map(url => url.trim()).filter(Boolean);
+      if (!urls.length) return '<span class="text-gray-400">-</span>';
+      return urls.slice(0, 3).map((url, index) => (
+        `<a class="text-blue-700 hover:text-blue-900 underline" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Source ${index + 1}</a>`
+      )).join('<br>');
+    }
+
+    function renderRows(ports) {
+      const body = document.getElementById('port-status-rows');
+      body.innerHTML = '';
+
+      if (!ports.length) {
+        body.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-500">No port status rows available.</td></tr>';
+        return;
+      }
+
+      ports.forEach(port => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-gray-50';
+        tr.innerHTML = `
+          <td class="px-4 py-3 font-semibold text-gray-800 whitespace-nowrap">${escapeHtml(port.port)}</td>
+          <td class="px-4 py-3">
+            <span class="inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClasses(port.status)}">${escapeHtml(port.status)}</span>
+          </td>
+          <td class="px-4 py-3 text-gray-700 min-w-[220px]">${escapeHtml(port.failure_detail || '-')}</td>
+          <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(port.last_successful_data_month || '-')}</td>
+          <td class="px-4 py-3 whitespace-nowrap">${formatTimestamp(port.last_data_pull_utc)}</td>
+          <td class="px-4 py-3 text-right whitespace-nowrap">${formatNumber(port.latest_total_teu)}</td>
+          <td class="px-4 py-3 min-w-[120px]">${renderSourceLinks(port.source_urls)}</td>
+          <td class="px-4 py-3 text-gray-600 min-w-[260px]">${escapeHtml(port.notes || '')}</td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    async function fetchPortStatus() {
+      const errorBox = document.getElementById('status-error');
+      errorBox.classList.add('hidden');
+      try {
+        const response = await fetch('/api/port_data_status');
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(`${result.error || 'Unable to load port status'} ${result.setup_hint || ''}`.trim());
+        }
+        const counts = result.counts || {};
+        document.getElementById('ports-ok').textContent = counts.ok || 0;
+        document.getElementById('ports-warning').textContent = counts.warning || 0;
+        document.getElementById('ports-error').textContent = counts.error || 0;
+        document.getElementById('ports-total').textContent = result.port_count || (result.ports || []).length;
+        document.getElementById('status-freshness').textContent = `Status generated ${formatTimestamp(result.generated_at_utc)}`;
+        renderRows(result.ports || []);
+      } catch (error) {
+        errorBox.textContent = error.message || 'Unable to load port status.';
+        errorBox.classList.remove('hidden');
+        document.getElementById('status-freshness').textContent = 'Status unavailable';
+        renderRows([]);
+      }
+    }
+
+    fetchPortStatus();
+    setInterval(fetchPortStatus, 600000);
+  </script>
+</body>
+</html>

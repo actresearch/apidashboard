@@ -21,6 +21,8 @@ Set these in the Portainer stack editor or in a stack env file:
 - `GHCR_IMAGE=ghcr.io/actresearch/apidashboard:latest`
 - `APP_PORT=5005`
 - `DASHBOARD_LOG_PATH=/opt/api-dashboard/logs`
+- `PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json`
+- `PORT_MONITOR_STATUS_URL=`
 - `SUPABASE_URL=https://your-project.supabase.co`
 - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
 - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -29,6 +31,8 @@ Set these in the Portainer stack editor or in a stack env file:
 Notes:
 
 - `DASHBOARD_LOG_PATH` should be an absolute path on the Docker host running Portainer.
+- `PORT_MONITOR_STATUS_PATH` should point to the port monitor JSON status file inside the container. The default expects the file to be present in the mounted dashboard log directory.
+- `PORT_MONITOR_STATUS_URL` can point to an internal URL serving the JSON. If set, it takes precedence over `PORT_MONITOR_STATUS_PATH`.
 - `SUPABASE_SERVICE_ROLE_KEY` is a secret. Set it in Portainer; do not commit a real key to the repo.
 - Portainer stack environment values are used for compose substitution. `docker-compose.yml` must also list a value under the service `environment:` block for it to appear inside the container.
 - This app does not currently require Redis for the stack defined in this repo.
@@ -45,12 +49,15 @@ Notes:
    - `GHCR_IMAGE=ghcr.io/actresearch/apidashboard:latest`
    - `APP_PORT=5005`
    - `DASHBOARD_LOG_PATH=/opt/api-dashboard/logs`
+   - `PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json`
+   - `PORT_MONITOR_STATUS_URL=`
    - `SUPABASE_URL=https://your-project.supabase.co`
    - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
    - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
    - `USAGE_STATS_CACHE_SECONDS=86400`
 8. Deploy the stack.
 9. After the container starts, open `http://<your-server>:5005/health` and confirm it returns a healthy response.
+10. Open `http://<your-server>:5005/ports` and confirm the port status table loads.
 
 ## Watchtower Behavior
 
@@ -104,6 +111,12 @@ If the dashboard says `Supabase environment variables are not configured`, inspe
 
 If `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are missing there, the values are defined in the Portainer stack but are not being injected into the service environment. Make sure `docker-compose.yml` includes them under `services.api-dashboard.environment`, then redeploy the stack.
 
+### Port data status says the status file is missing
+
+If `/ports` says the port monitor status file is missing, confirm the daily port monitor is writing `Major US Port Data Monitor.status.json` and that the file is available inside the container at `PORT_MONITOR_STATUS_PATH`.
+
+For the default compose settings, copy or sync the JSON into the host directory configured by `DASHBOARD_LOG_PATH`, which appears in the container as `/app/logs`. As an alternative, serve the JSON internally and set `PORT_MONITOR_STATUS_URL`.
+
 ## Quick Verification
 
 Before you rely on auto-updates, confirm:
@@ -112,4 +125,6 @@ Before you rely on auto-updates, confirm:
 - the workflow has produced a `latest` tag
 - Portainer can pull the image
 - `/health` responds successfully after deployment
+- `/ports` returns the port data status page
+- `/api/port_data_status` returns the generated port monitor JSON
 - Watchtower is running in the stack

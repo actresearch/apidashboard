@@ -1,4 +1,6 @@
+import json
 import pathlib
+import tempfile
 import unittest
 
 import app as dashboard_app
@@ -66,6 +68,29 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertNotIn("/rest/v1/api_request_logs", app_source)
         self.assertNotIn("offset", app_source)
         self.assertNotIn("limit", app_source)
+
+    def test_port_data_status_reads_status_file(self):
+        original_path = dashboard_app.PORT_MONITOR_STATUS_PATH
+        payload = {
+            "generated_at_utc": "2026-08-25T12:00:00+00:00",
+            "port_count": 1,
+            "counts": {"ok": 1, "warning": 0, "error": 0, "other": 0},
+            "ports": [{"port": "Savannah", "status": "ok"}],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = pathlib.Path(directory) / "port_status.json"
+            status_path.write_text(json.dumps(payload), encoding="utf-8")
+            dashboard_app.PORT_MONITOR_STATUS_PATH = str(status_path)
+
+            try:
+                client = dashboard_app.app.test_client()
+                response = client.get("/api/port_data_status")
+            finally:
+                dashboard_app.PORT_MONITOR_STATUS_PATH = original_path
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["ports"][0]["port"], "Savannah")
 
 
 if __name__ == "__main__":
