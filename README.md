@@ -8,6 +8,7 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 - **Interactive Charts**: Visualize hourly API calls and traffic sources using Chart.js
 - **Live Streaming Data**: Real-time updates for API health, watchdog activity, and FTP automations
 - **Port Data Status**: Operational view of the major-port data monitor status file
+- **Automation Status**: Homepage triage rows and detail pages for recurring data jobs
 - **Responsive Design**: Modern UI built with Tailwind CSS
 - **24-hour and 30-day Analytics**: Comprehensive usage statistics and trends
 - **Efficient API Usage Snapshot**: 30-day Supabase usage rankings are read from a small daily aggregate instead of raw log rows
@@ -31,6 +32,10 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 
 ### Port Data
 - **Port Data Status**: One row per tracked port with source status, failure detail, latest successful data month, last pull timestamp, latest TEUs, and source links.
+
+### Automations
+- **Automation Summary**: Homepage rows for recurring jobs with status, cadence, last run, latest data, and 1-3 clear indicators.
+- **Automation Detail**: `/automations/<automation_id>` displays normalized run details plus raw status JSON for a specific job.
 
 ## Technology Stack
 
@@ -69,6 +74,7 @@ The dashboard connects to various API endpoints for data:
 - Traffic analytics: `http://192.168.1.17:5003/api/traffic`
 - Usage statistics: local `/api/usage_stats`, backed by Supabase `api_usage_stats_snapshot`
 - Port data status: local `/api/port_data_status`, backed by the JSON file from the port monitor
+- Automation status: local `/api/automation_status`, backed by posted JSON files in `AUTOMATION_STATUS_DIR`
 
 Update these endpoints in `templates/index.html` to match your API configuration.
 
@@ -85,6 +91,37 @@ Make the generated JSON visible inside the dashboard container by copying or syn
 Alternatively, set `PORT_MONITOR_STATUS_URL` to an internal URL that serves the same JSON. When that variable is set, the dashboard reads from the URL instead of the file path.
 
 For a dashboard hosted on a different machine, configure the port monitor to POST status updates to `/api/port_data_status`. Both the Windows port monitor environment and the dashboard container environment must set the same `PORT_MONITOR_STATUS_TOKEN`; do not commit the token.
+
+### Automation status setup
+
+Recurring jobs can POST status JSON to:
+
+```bash
+http://<dashboard-host>:5005/api/automation_status
+```
+
+The dashboard stores those payloads under:
+
+```bash
+AUTOMATION_STATUS_DIR=/app/logs/automations
+```
+
+Set the same shared bearer token in the dashboard container and in each Windows automation environment:
+
+```bash
+AUTOMATION_STATUS_TOKEN=<shared-status-token>
+```
+
+Each automation payload must include `automation_id`. The dashboard currently expects summary rows for:
+
+- `port_data_monitor`
+- `aar_weekly_rail`
+- `diesel_prices`
+- `ata_reports`
+- `bts_transborder`
+- `freightwaves_sonar`
+
+If an expected automation has not posted a status file yet, the homepage shows it as `missing`. Use `AUTOMATION_STATUS_PATHS` for optional direct file paths when a status JSON is mounted into the container instead of posted.
 
 ### Supabase usage snapshot setup
 
@@ -109,6 +146,7 @@ The usage rankings should update no more than once per day. Do not point the das
 - **Auto-refresh**: Data refreshes every 10 minutes automatically
 - **Usage stats caching**: 30-day usage rankings load from the daily Supabase snapshot once per page load
 - **Port status page**: `/ports` displays the latest port-monitor status JSON
+- **Automation status pages**: `/automations/<automation_id>` displays each recurring job status JSON
 - **Manual refresh**: Click the refresh button for immediate updates
 - **Responsive design**: Works on desktop and mobile devices
 - **Real-time streaming**: Live updates without page refresh

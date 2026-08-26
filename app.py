@@ -1,5 +1,7 @@
 import os
 import json
+import glob
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +34,17 @@ PORT_MONITOR_STATUS_PATH = os.getenv(
 )
 PORT_MONITOR_STATUS_URL = os.getenv("PORT_MONITOR_STATUS_URL")
 PORT_MONITOR_STATUS_TOKEN = os.getenv("PORT_MONITOR_STATUS_TOKEN", "")
+AUTOMATION_STATUS_DIR = os.getenv("AUTOMATION_STATUS_DIR", "/app/logs/automations")
+AUTOMATION_STATUS_PATHS = os.getenv("AUTOMATION_STATUS_PATHS", "")
+AUTOMATION_STATUS_TOKEN = os.getenv("AUTOMATION_STATUS_TOKEN", "")
+EXPECTED_AUTOMATIONS = [
+    {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
+    {"automation_id": "aar_weekly_rail", "automation": "AAR Weekly Rail Feed", "cadence": "weekly"},
+    {"automation_id": "diesel_prices", "automation": "Diesel Prices EIA Collection", "cadence": "daily"},
+    {"automation_id": "ata_reports", "automation": "ATA Reports", "cadence": "daily"},
+    {"automation_id": "bts_transborder", "automation": "BTS TransBorder Raw Data", "cadence": "daily"},
+    {"automation_id": "freightwaves_sonar", "automation": "FreightWaves SONAR API", "cadence": "weekly"},
+]
 
 @app.route('/')
 def dashboard():
@@ -41,6 +54,11 @@ def dashboard():
 @app.route('/ports')
 def ports_dashboard():
     return render_template('ports.html')
+
+
+@app.route('/automations/<automation_id>')
+def automation_detail(automation_id):
+    return render_template('automation_detail.html', automation_id=automation_id)
 
 
 @app.route('/health')
@@ -137,6 +155,35 @@ def port_data_status():
         }), 502
 
 
+@app.route('/api/automation_status', methods=['GET', 'POST'])
+def automation_status():
+    if request.method == 'POST':
+        return receive_automation_status()
+    try:
+        return jsonify(load_automation_statuses())
+    except Exception as e:
+        return jsonify({
+            "error": "Unable to load automation statuses",
+            "detail": str(e),
+            "automation_status_dir": AUTOMATION_STATUS_DIR,
+            "automations": [],
+            "counts": {"ok": 0, "warning": 0, "error": 0, "missing": 0, "other": 0},
+        }), 502
+
+
+@app.route('/api/automation_status/<automation_id>')
+def automation_status_detail(automation_id):
+    payload = load_automation_statuses(include_raw=True)
+    for automation in payload.get("automations", []):
+        if automation.get("automation_id") == automation_id:
+            return jsonify(automation)
+    return jsonify({
+        "error": "Automation status not found",
+        "automation_id": automation_id,
+        "setup_hint": "Confirm the automation has posted status JSON or that AUTOMATION_STATUS_PATHS includes its status file.",
+    }), 404
+
+
 def receive_port_monitor_status():
     if not PORT_MONITOR_STATUS_TOKEN:
         return jsonify({
@@ -164,6 +211,39 @@ def receive_port_monitor_status():
     })
 
 
+def receive_automation_status():
+    if not AUTOMATION_STATUS_TOKEN:
+        return jsonify({
+            "error": "Automation status posting is not configured",
+            "setup_hint": "Set AUTOMATION_STATUS_TOKEN in the dashboard environment before accepting posted automation updates.",
+        }), 503
+
+    provided_token = request.headers.get("Authorization", "")
+    expected_token = f"Bearer {AUTOMATION_STATUS_TOKEN}"
+    if provided_token != expected_token and request.headers.get("X-Automation-Status-Token", "") != AUTOMATION_STATUS_TOKEN:
+        return jsonify({"error": "Invalid automation status token"}), 401
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Expected JSON object payload"}), 400
+
+    automation_id = payload.get("automation_id")
+    if not automation_id:
+        return jsonify({"error": "automation_id is required"}), 400
+
+    normalized = normalize_automation_status(payload)
+    os.makedirs(AUTOMATION_STATUS_DIR, exist_ok=True)
+    status_path = os.path.join(AUTOMATION_STATUS_DIR, f"{safe_status_filename(automation_id)}.json")
+    with open(status_path, "w", encoding="utf-8") as handle:
+        json.dump(normalized.get("raw", payload), handle, indent=2, ensure_ascii=False)
+
+    return jsonify({
+        "status": "saved",
+        "automation_id": automation_id,
+        "status_path": status_path,
+    })
+
+
 def load_port_monitor_status():
     if PORT_MONITOR_STATUS_URL:
         request = urllib.request.Request(
@@ -181,6 +261,206 @@ def normalize_port_monitor_status(payload):
     payload.setdefault("ports", [])
     payload.setdefault("counts", {"ok": 0, "warning": 0, "error": 0, "other": 0})
     return payload
+
+
+def load_automation_statuses(include_raw=False):
+    statuses = {}
+    load_errors = []
+
+    try:
+        port_payload = load_port_monitor_status()
+        statuses["port_data_monitor"] = normalize_port_status_as_automation(port_payload, include_raw=include_raw)
+    except Exception as e:
+        load_errors.append({"path": PORT_MONITOR_STATUS_PATH, "error": str(e)})
+
+    for status_path in automation_status_paths():
+        try:
+            with open(status_path, "r", encoding="utf-8") as handle:
+                normalized = normalize_automation_status(json.load(handle), include_raw=include_raw)
+                automation_id = normalized.get("automation_id")
+                if automation_id:
+                    statuses[automation_id] = normalized
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            load_errors.append({"path": status_path, "error": str(e)})
+
+    for expected in EXPECTED_AUTOMATIONS:
+        automation_id = expected["automation_id"]
+        if automation_id not in statuses:
+            statuses[automation_id] = normalize_missing_automation(expected)
+
+    automations = sorted(
+        statuses.values(),
+        key=lambda item: (status_sort_order(item.get("status")), item.get("automation", "")),
+    )
+    counts = {"ok": 0, "warning": 0, "error": 0, "missing": 0, "other": 0}
+    for item in automations:
+        status = item.get("status", "other")
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["other"] += 1
+
+    return {
+        "generated_at_utc": dashboard_utc_now(),
+        "automation_count": len(automations),
+        "counts": counts,
+        "load_errors": load_errors,
+        "automations": automations,
+    }
+
+
+def automation_status_paths():
+    paths = []
+    if AUTOMATION_STATUS_DIR:
+        paths.extend(glob.glob(os.path.join(AUTOMATION_STATUS_DIR, "*.json")))
+    if AUTOMATION_STATUS_PATHS:
+        paths.extend(path for path in AUTOMATION_STATUS_PATHS.split(os.pathsep) if path)
+    return list(dict.fromkeys(paths))
+
+
+def normalize_automation_status(payload, include_raw=False):
+    automation_id = payload.get("automation_id") or payload.get("id") or "unknown"
+    status = normalize_status_value(payload.get("status"))
+    failure_count = int(payload.get("failure_count") or 0)
+    warning_count = int(payload.get("warning_count") or 0)
+    if failure_count > 0:
+        status = "error"
+    elif warning_count > 0 and status == "ok":
+        status = "warning"
+
+    raw_indicators = [
+        payload.get("failure_detail"),
+        payload.get("warning_detail"),
+        payload.get("latest_data_period"),
+        payload.get("last_success_utc"),
+        payload.get("new_rows"),
+        payload.get("new_files"),
+    ]
+    indicators = [str(value) for value in raw_indicators if value not in (None, "")]
+
+    normalized = {
+        "automation_id": automation_id,
+        "automation": payload.get("automation") or title_from_id(automation_id),
+        "cadence": payload.get("cadence") or "unknown",
+        "status": status,
+        "last_run_utc": payload.get("last_run_utc") or payload.get("finished_utc") or payload.get("generated_at_utc"),
+        "last_success_utc": payload.get("last_success_utc"),
+        "latest_data_period": payload.get("latest_data_period"),
+        "failure_count": failure_count,
+        "failure_detail": payload.get("failure_detail") or "",
+        "warning_count": warning_count,
+        "warning_detail": payload.get("warning_detail") or "",
+        "new_rows": payload.get("new_rows"),
+        "new_files": payload.get("new_files"),
+        "output_path": payload.get("output_path"),
+        "detail_url": payload.get("detail_url") or f"/automations/{automation_id}",
+        "indicators": indicators[:3],
+        "raw": payload if include_raw else None,
+    }
+    if not include_raw:
+        normalized.pop("raw", None)
+    return normalized
+
+
+def normalize_missing_automation(expected):
+    return {
+        "automation_id": expected["automation_id"],
+        "automation": expected["automation"],
+        "cadence": expected.get("cadence", "unknown"),
+        "status": "missing",
+        "last_run_utc": None,
+        "last_success_utc": None,
+        "latest_data_period": None,
+        "failure_count": 0,
+        "failure_detail": "",
+        "warning_count": 0,
+        "warning_detail": "No status JSON has been received.",
+        "new_rows": None,
+        "new_files": None,
+        "output_path": None,
+        "detail_url": expected.get("detail_url") or f"/automations/{expected['automation_id']}",
+        "indicators": ["No status JSON has been received."],
+    }
+
+
+def normalize_port_status_as_automation(payload, include_raw=False):
+    counts = payload.get("counts", {})
+    error_count = int(counts.get("error") or 0)
+    warning_count = int(counts.get("warning") or 0)
+    if error_count:
+        status = "error"
+    elif warning_count:
+        status = "warning"
+    else:
+        status = "ok"
+
+    ports = payload.get("ports", [])
+    latest_months = [port.get("last_successful_data_month") for port in ports if port.get("last_successful_data_month")]
+    last_pulls = [port.get("last_data_pull_utc") for port in ports if port.get("last_data_pull_utc")]
+    failure_details = [f"{port.get('port')}: {port.get('failure_detail')}" for port in ports if port.get("failure_detail")]
+    latest_period = max(latest_months) if latest_months else None
+    last_run = max(last_pulls) if last_pulls else payload.get("generated_at_utc")
+    indicators = [
+        f"{counts.get('ok', 0)} ports OK",
+        f"{warning_count} warnings",
+        f"{error_count} failures",
+    ]
+
+    normalized = {
+        "automation_id": "port_data_monitor",
+        "automation": "Major Port Data Monitor",
+        "cadence": "daily",
+        "status": status,
+        "last_run_utc": last_run,
+        "last_success_utc": last_run if status == "ok" else None,
+        "latest_data_period": latest_period,
+        "failure_count": error_count,
+        "failure_detail": "; ".join(failure_details),
+        "warning_count": warning_count,
+        "warning_detail": "",
+        "new_rows": None,
+        "new_files": None,
+        "output_path": payload.get("output_path"),
+        "detail_url": "/ports",
+        "indicators": indicators,
+        "raw": payload if include_raw else None,
+    }
+    if not include_raw:
+        normalized.pop("raw", None)
+    return normalized
+
+
+def normalize_status_value(status):
+    status = str(status or "unknown").lower()
+    if status in {"ok", "success", "healthy"}:
+        return "ok"
+    if status in {"warning", "partial"}:
+        return "warning"
+    if status in {"error", "failed", "failure"}:
+        return "error"
+    if status == "missing":
+        return "missing"
+    return "other"
+
+
+def status_sort_order(status):
+    return {"error": 0, "missing": 1, "warning": 2, "other": 3, "ok": 4}.get(status, 5)
+
+
+def safe_status_filename(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._") or "unknown"
+
+
+def title_from_id(value):
+    return str(value).replace("_", " ").title()
+
+
+def dashboard_utc_now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def fetch_supabase_usage_snapshot():

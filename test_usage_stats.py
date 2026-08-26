@@ -144,6 +144,95 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(saved["ports"][0]["port"], "Houston")
 
+    def test_automation_status_lists_expected_missing_rows(self):
+        original_dir = dashboard_app.AUTOMATION_STATUS_DIR
+        original_paths = dashboard_app.AUTOMATION_STATUS_PATHS
+        original_load_port = dashboard_app.load_port_monitor_status
+
+        with tempfile.TemporaryDirectory() as directory:
+            dashboard_app.AUTOMATION_STATUS_DIR = directory
+            dashboard_app.AUTOMATION_STATUS_PATHS = ""
+            dashboard_app.load_port_monitor_status = lambda: {
+                "generated_at_utc": "2026-08-25T12:00:00Z",
+                "counts": {"ok": 2, "warning": 1, "error": 0, "other": 0},
+                "ports": [
+                    {"port": "Savannah", "status": "ok", "last_successful_data_month": "2026-06", "last_data_pull_utc": "2026-08-25T12:00:00Z"}
+                ],
+            }
+
+            try:
+                client = dashboard_app.app.test_client()
+                response = client.get("/api/automation_status")
+            finally:
+                dashboard_app.AUTOMATION_STATUS_DIR = original_dir
+                dashboard_app.AUTOMATION_STATUS_PATHS = original_paths
+                dashboard_app.load_port_monitor_status = original_load_port
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["counts"]["warning"], 1)
+        self.assertTrue(any(item["automation_id"] == "diesel_prices" and item["status"] == "missing" for item in payload["automations"]))
+        self.assertTrue(any(item["automation_id"] == "port_data_monitor" and item["status"] == "warning" for item in payload["automations"]))
+
+    def test_automation_status_post_saves_status_file(self):
+        original_dir = dashboard_app.AUTOMATION_STATUS_DIR
+        original_token = dashboard_app.AUTOMATION_STATUS_TOKEN
+
+        with tempfile.TemporaryDirectory() as directory:
+            dashboard_app.AUTOMATION_STATUS_DIR = directory
+            dashboard_app.AUTOMATION_STATUS_TOKEN = "test-token"
+
+            try:
+                client = dashboard_app.app.test_client()
+                unauthorized = client.post(
+                    "/api/automation_status",
+                    json={"automation_id": "diesel_prices", "automation": "Diesel Prices", "status": "ok"},
+                    headers={"Authorization": "Bearer wrong-token"},
+                )
+                response = client.post(
+                    "/api/automation_status",
+                    json={"automation_id": "diesel_prices", "automation": "Diesel Prices", "status": "ok"},
+                    headers={"Authorization": "Bearer test-token"},
+                )
+            finally:
+                dashboard_app.AUTOMATION_STATUS_DIR = original_dir
+                dashboard_app.AUTOMATION_STATUS_TOKEN = original_token
+
+            saved = json.loads((pathlib.Path(directory) / "diesel_prices.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(saved["automation_id"], "diesel_prices")
+
+    def test_automation_status_detail_reads_posted_payload(self):
+        original_dir = dashboard_app.AUTOMATION_STATUS_DIR
+        original_paths = dashboard_app.AUTOMATION_STATUS_PATHS
+        original_load_port = dashboard_app.load_port_monitor_status
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = pathlib.Path(directory) / "freightwaves_sonar.json"
+            status_path.write_text(json.dumps({
+                "automation_id": "freightwaves_sonar",
+                "automation": "FreightWaves SONAR API",
+                "status": "ok",
+                "cadence": "weekly",
+                "latest_data_period": "2026-08-25",
+            }), encoding="utf-8")
+            dashboard_app.AUTOMATION_STATUS_DIR = directory
+            dashboard_app.AUTOMATION_STATUS_PATHS = ""
+            dashboard_app.load_port_monitor_status = lambda: {"counts": {"ok": 0, "warning": 0, "error": 0, "other": 0}, "ports": []}
+
+            try:
+                client = dashboard_app.app.test_client()
+                response = client.get("/api/automation_status/freightwaves_sonar")
+            finally:
+                dashboard_app.AUTOMATION_STATUS_DIR = original_dir
+                dashboard_app.AUTOMATION_STATUS_PATHS = original_paths
+                dashboard_app.load_port_monitor_status = original_load_port
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["latest_data_period"], "2026-08-25")
+
 
 if __name__ == "__main__":
     unittest.main()

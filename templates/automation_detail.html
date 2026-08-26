@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automation Status</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-white text-gray-800 font-sans">
+  <div class="p-6 w-full mx-auto">
+    <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">
+      <div>
+        <a href="/#automations" class="text-sm font-semibold text-blue-700 hover:text-blue-900">API Dashboard</a>
+        <h1 id="automation-title" class="text-4xl font-bold text-blue-800 mt-1">Automation Status</h1>
+        <p id="automation-subtitle" class="text-sm text-gray-500 mt-2">Loading status...</p>
+      </div>
+      <button onclick="fetchAutomationDetail()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">Refresh</button>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Status</h2>
+        <p id="automation-status" class="text-3xl font-bold text-gray-700">-</p>
+      </div>
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Latest Data</h2>
+        <p id="automation-latest-data" class="text-3xl font-bold text-blue-700">-</p>
+      </div>
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Failures</h2>
+        <p id="automation-failures" class="text-3xl font-bold text-red-700">-</p>
+      </div>
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-sm font-semibold text-gray-600 mb-2">Warnings</h2>
+        <p id="automation-warnings" class="text-3xl font-bold text-yellow-700">-</p>
+      </div>
+    </div>
+
+    <div id="status-error" class="hidden bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6 text-sm"></div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">Run Details</h2>
+        <dl id="run-details" class="grid grid-cols-1 gap-3 text-sm"></dl>
+      </div>
+
+      <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
+        <h2 class="text-xl font-semibold text-blue-700 mb-4">Indicators</h2>
+        <div id="indicator-list" class="space-y-2 text-sm"></div>
+      </div>
+    </div>
+
+    <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5 mt-6">
+      <h2 class="text-xl font-semibold text-blue-700 mb-4">Raw Status JSON</h2>
+      <pre id="raw-json" class="bg-gray-50 border border-gray-200 rounded-lg p-4 text-xs overflow-x-auto max-h-[520px]"></pre>
+    </div>
+  </div>
+
+  <script>
+    const AUTOMATION_ID = {{ automation_id|tojson }};
+    const DASHBOARD_TIME_ZONE = 'America/New_York';
+    const DASHBOARD_TIME_ZONE_LABEL = 'ET';
+
+    function parseDashboardTimestamp(value) {
+      if (!value) return new Date(NaN);
+      const timestamp = String(value).trim();
+      const hasExplicitOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp);
+      return new Date(hasExplicitOffset ? timestamp : `${timestamp}Z`);
+    }
+
+    function formatTimestamp(value) {
+      const date = parseDashboardTimestamp(value);
+      if (Number.isNaN(date.getTime())) return 'Unknown';
+      return `${date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: DASHBOARD_TIME_ZONE
+      })} ${DASHBOARD_TIME_ZONE_LABEL}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatStatus(status) {
+      return String(status || '').replace(/_/g, ' ');
+    }
+
+    function renderDetailRow(label, value) {
+      return `
+        <div>
+          <dt class="text-xs uppercase font-semibold text-gray-500">${escapeHtml(label)}</dt>
+          <dd class="text-gray-800 break-words">${escapeHtml(value || '-')}</dd>
+        </div>
+      `;
+    }
+
+    async function fetchAutomationDetail() {
+      const errorBox = document.getElementById('status-error');
+      errorBox.classList.add('hidden');
+      try {
+        const response = await fetch(`/api/automation_status/${encodeURIComponent(AUTOMATION_ID)}`);
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(`${result.error || 'Unable to load automation status'} ${result.setup_hint || ''}`.trim());
+        }
+
+        document.getElementById('automation-title').textContent = result.automation || AUTOMATION_ID;
+        document.getElementById('automation-subtitle').textContent = `Last run ${formatTimestamp(result.last_run_utc)} · ${escapeHtml(result.cadence || 'unknown')}`;
+        document.getElementById('automation-status').textContent = formatStatus(result.status);
+        document.getElementById('automation-latest-data').textContent = result.latest_data_period || '-';
+        document.getElementById('automation-failures').textContent = result.failure_count || 0;
+        document.getElementById('automation-warnings').textContent = result.warning_count || 0;
+
+        document.getElementById('run-details').innerHTML = [
+          renderDetailRow('Last Run', formatTimestamp(result.last_run_utc)),
+          renderDetailRow('Last Success', formatTimestamp(result.last_success_utc)),
+          renderDetailRow('Output', result.output_path),
+          renderDetailRow('Failure Detail', result.failure_detail),
+          renderDetailRow('Warning Detail', result.warning_detail),
+          renderDetailRow('New Rows', result.new_rows),
+          renderDetailRow('New Files', result.new_files)
+        ].join('');
+
+        const indicators = (result.indicators || []).filter(Boolean);
+        document.getElementById('indicator-list').innerHTML = indicators.length
+          ? indicators.map(item => `<div class="border-b border-gray-100 pb-2">${escapeHtml(item)}</div>`).join('')
+          : '<p class="text-gray-500">No indicators reported.</p>';
+
+        document.getElementById('raw-json').textContent = JSON.stringify(result.raw || result, null, 2);
+      } catch (error) {
+        errorBox.textContent = error.message || 'Unable to load automation status.';
+        errorBox.classList.remove('hidden');
+        document.getElementById('automation-subtitle').textContent = 'Status unavailable';
+      }
+    }
+
+    fetchAutomationDetail();
+    setInterval(fetchAutomationDetail, 600000);
+  </script>
+</body>
+</html>

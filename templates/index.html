@@ -20,6 +20,7 @@
       <div class="flex items-center gap-3">
         <span class="text-xs font-semibold uppercase text-gray-500">All times ET</span>
         <a href="/ports" class="bg-white border border-blue-200 text-blue-700 px-4 py-2 rounded hover:bg-blue-50 text-sm">Port Data</a>
+        <a href="#automations" class="bg-white border border-blue-200 text-blue-700 px-4 py-2 rounded hover:bg-blue-50 text-sm">Automations</a>
         <button onclick="fetchInsights()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">🔄 Refresh</button>
       </div>
     </div>
@@ -60,6 +61,54 @@
       <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
         <h2 class="text-sm font-semibold text-gray-600 mb-2">Traffic Source (24h)</h2>
         <canvas id="trafficChart" height="80"></canvas>
+      </div>
+    </div>
+
+    <!-- Automations Summary Section -->
+    <div id="automations" class="bg-white border border-gray-200 shadow-md rounded-xl overflow-hidden mb-6">
+      <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between px-5 py-4 border-b border-gray-100">
+        <div>
+          <h2 class="text-xl font-semibold text-blue-700">Automations</h2>
+          <p id="automation-freshness" class="text-xs text-gray-500 mt-1">Loading automation status...</p>
+        </div>
+        <div class="grid grid-cols-4 gap-3 text-center text-xs">
+          <div>
+            <p class="font-semibold text-green-700" id="automation-ok-count">-</p>
+            <p class="text-gray-500">OK</p>
+          </div>
+          <div>
+            <p class="font-semibold text-yellow-700" id="automation-warning-count">-</p>
+            <p class="text-gray-500">Warn</p>
+          </div>
+          <div>
+            <p class="font-semibold text-red-700" id="automation-error-count">-</p>
+            <p class="text-gray-500">Fail</p>
+          </div>
+          <div>
+            <p class="font-semibold text-gray-700" id="automation-missing-count">-</p>
+            <p class="text-gray-500">Missing</p>
+          </div>
+        </div>
+      </div>
+      <div id="automation-summary-error" class="hidden bg-red-50 border-b border-red-100 text-red-700 px-5 py-3 text-sm"></div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50 text-gray-600">
+            <tr>
+              <th class="text-left font-semibold px-5 py-3">Process</th>
+              <th class="text-left font-semibold px-5 py-3">Status</th>
+              <th class="text-left font-semibold px-5 py-3">Last Run</th>
+              <th class="text-left font-semibold px-5 py-3">Latest Data</th>
+              <th class="text-left font-semibold px-5 py-3">Indicators</th>
+              <th class="text-left font-semibold px-5 py-3">Detail</th>
+            </tr>
+          </thead>
+          <tbody id="automation-summary-rows" class="divide-y divide-gray-100">
+            <tr>
+              <td colspan="6" class="px-5 py-6 text-center text-gray-500">Loading...</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -178,6 +227,14 @@
 
     function formatStatus(status) {
       return String(status || '').replace(/_/g, ' ');
+    }
+
+    function statusClasses(status) {
+      if (status === 'ok') return 'bg-green-100 text-green-800';
+      if (status === 'warning') return 'bg-yellow-100 text-yellow-800';
+      if (status === 'error') return 'bg-red-100 text-red-800';
+      if (status === 'missing') return 'bg-gray-200 text-gray-800';
+      return 'bg-gray-100 text-gray-700';
     }
 
     async function fetchInsights() {
@@ -464,12 +521,69 @@
       });
     }
 
+    async function fetchAutomationSummary() {
+      const errorBox = document.getElementById('automation-summary-error');
+      errorBox.classList.add('hidden');
+      try {
+        const response = await fetch('/api/automation_status');
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(`${result.error || 'Unable to load automation statuses'} ${result.setup_hint || ''}`.trim());
+        }
+
+        const counts = result.counts || {};
+        document.getElementById('automation-ok-count').textContent = counts.ok || 0;
+        document.getElementById('automation-warning-count').textContent = counts.warning || 0;
+        document.getElementById('automation-error-count').textContent = counts.error || 0;
+        document.getElementById('automation-missing-count').textContent = counts.missing || 0;
+        document.getElementById('automation-freshness').textContent = `Status refreshed ${formatTimestamp(result.generated_at_utc)}`;
+        renderAutomationRows(result.automations || []);
+      } catch (error) {
+        errorBox.textContent = error.message || 'Unable to load automation statuses.';
+        errorBox.classList.remove('hidden');
+        document.getElementById('automation-freshness').textContent = 'Automation status unavailable';
+        renderAutomationRows([]);
+      }
+    }
+
+    function renderAutomationRows(rows) {
+      const body = document.getElementById('automation-summary-rows');
+      body.innerHTML = '';
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="6" class="px-5 py-6 text-center text-gray-500">No automation status rows available.</td></tr>';
+        return;
+      }
+
+      rows.forEach(item => {
+        const indicators = (item.indicators || []).filter(Boolean).slice(0, 3);
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-gray-50';
+        tr.innerHTML = `
+          <td class="px-5 py-3">
+            <p class="font-semibold text-gray-800">${escapeHtml(item.automation)}</p>
+            <p class="text-xs text-gray-500">${escapeHtml(item.cadence || 'unknown')}</p>
+          </td>
+          <td class="px-5 py-3">
+            <span class="inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClasses(item.status)}">${escapeHtml(formatStatus(item.status))}</span>
+          </td>
+          <td class="px-5 py-3 whitespace-nowrap">${formatTimestamp(item.last_run_utc)}</td>
+          <td class="px-5 py-3 whitespace-nowrap">${escapeHtml(item.latest_data_period || '-')}</td>
+          <td class="px-5 py-3 min-w-[280px]">${indicators.length ? indicators.map(escapeHtml).join('<br>') : '-'}</td>
+          <td class="px-5 py-3 whitespace-nowrap">
+            <a class="text-blue-700 hover:text-blue-900 underline" href="${escapeHtml(item.detail_url || `/automations/${item.automation_id}`)}">Open</a>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
     // Refresh function to fetch data on button click
     function refreshData() {
       fetchInsights();
       fetchErrorRate();
       fetchPerformanceData();
       fetchTrafficData();
+      fetchAutomationSummary();
     }
 
     // Set interval for automatic data refresh (every 10 minutes)
