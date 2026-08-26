@@ -333,6 +333,7 @@ def normalize_automation_status(payload, include_raw=False):
     raw_indicators = [
         payload.get("failure_detail"),
         payload.get("warning_detail"),
+        payload.get("pending_detail"),
         payload.get("latest_data_period"),
         payload.get("last_success_utc"),
         payload.get("new_rows"),
