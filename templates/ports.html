@@ -19,7 +19,11 @@
         <h1 class="text-4xl font-bold text-blue-800 mt-1">Port Data Status</h1>
         <p id="status-freshness" class="text-sm text-gray-500 mt-2">Loading status...</p>
       </div>
-      <button onclick="fetchPortStatus()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">Refresh</button>
+      <div class="flex flex-wrap gap-2">
+        <button onclick="runControlAction('open-location')" id="open-location-button" disabled class="bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-800 text-sm disabled:opacity-50 disabled:cursor-not-allowed">Open File Location</button>
+        <button onclick="runControlAction('run')" id="run-process-button" disabled class="bg-green-700 text-white px-4 py-2 rounded hover:bg-green-800 text-sm disabled:opacity-50 disabled:cursor-not-allowed">Run Process</button>
+        <button onclick="fetchPortStatus()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">Refresh</button>
+      </div>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
@@ -42,6 +46,7 @@
     </div>
 
     <div id="status-error" class="hidden bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6 text-sm"></div>
+    <div id="control-message" class="hidden rounded-lg p-4 mb-6 text-sm"></div>
 
     <div class="bg-white border border-gray-200 shadow-md rounded-xl overflow-hidden">
       <div class="overflow-x-auto">
@@ -69,8 +74,10 @@
   </div>
 
   <script>
+    const AUTOMATION_ID = 'port_data_monitor';
     const DASHBOARD_TIME_ZONE = 'America/New_York';
     const DASHBOARD_TIME_ZONE_LABEL = 'ET';
+    const OPERATOR_TOKEN_KEY = 'actAutomationOperatorToken';
 
     function parseDashboardTimestamp(value) {
       if (!value) return new Date(NaN);
@@ -121,6 +128,68 @@
       )).join('<br>');
     }
 
+    function setControlMessage(message, type = 'info') {
+      const messageBox = document.getElementById('control-message');
+      messageBox.textContent = message;
+      messageBox.className = 'rounded-lg p-4 mb-6 text-sm';
+      if (type === 'error') {
+        messageBox.classList.add('bg-red-50', 'border', 'border-red-200', 'text-red-700');
+      } else if (type === 'success') {
+        messageBox.classList.add('bg-green-50', 'border', 'border-green-200', 'text-green-700');
+      } else {
+        messageBox.classList.add('bg-blue-50', 'border', 'border-blue-200', 'text-blue-700');
+      }
+    }
+
+    function setControlButtonsEnabled(enabled) {
+      document.getElementById('open-location-button').disabled = !enabled;
+      document.getElementById('run-process-button').disabled = !enabled;
+    }
+
+    function operatorToken() {
+      let token = sessionStorage.getItem(OPERATOR_TOKEN_KEY) || '';
+      if (!token) {
+        token = window.prompt('Automation operator token');
+        if (token) {
+          sessionStorage.setItem(OPERATOR_TOKEN_KEY, token);
+        }
+      }
+      return token;
+    }
+
+    async function runControlAction(action) {
+      const token = operatorToken();
+      if (!token) return;
+
+      const label = action === 'run' ? 'Run Process' : 'Open File Location';
+      setControlButtonsEnabled(false);
+      setControlMessage(`${label} request sent...`);
+      try {
+        const response = await fetch(`/api/automation_control/${encodeURIComponent(AUTOMATION_ID)}/${action}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Automation-Operator-Token': token
+          },
+          body: '{}'
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          if (response.status === 401) {
+            sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+          }
+          throw new Error(result.error || `${label} failed`);
+        }
+
+        const detail = result.pid ? ` PID ${result.pid}.` : '';
+        setControlMessage(`${label} succeeded.${detail}`, 'success');
+      } catch (error) {
+        setControlMessage(error.message || `${label} failed.`, 'error');
+      } finally {
+        setControlButtonsEnabled(true);
+      }
+    }
+
     function renderRows(ports) {
       const body = document.getElementById('port-status-rows');
       body.innerHTML = '';
@@ -165,11 +234,25 @@
         document.getElementById('ports-total').textContent = result.port_count || (result.ports || []).length;
         document.getElementById('status-freshness').textContent = `Status generated ${formatTimestamp(result.generated_at_utc)}`;
         renderRows(result.ports || []);
+        fetchAutomationControlStatus();
       } catch (error) {
         errorBox.textContent = error.message || 'Unable to load port status.';
         errorBox.classList.remove('hidden');
         document.getElementById('status-freshness').textContent = 'Status unavailable';
         renderRows([]);
+      }
+    }
+
+    async function fetchAutomationControlStatus() {
+      try {
+        const response = await fetch(`/api/automation_status/${encodeURIComponent(AUTOMATION_ID)}`);
+        const result = await response.json();
+        setControlButtonsEnabled(Boolean(response.ok && result.control_enabled));
+        if (!result.control_enabled) {
+          setControlMessage('Automation control is not configured for this dashboard.', 'info');
+        }
+      } catch (error) {
+        setControlButtonsEnabled(false);
       }
     }
 

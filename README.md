@@ -36,6 +36,7 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 ### Automations
 - **Automation Summary**: Homepage rows for recurring jobs with status, cadence, last run, latest data, and 1-3 clear indicators.
 - **Automation Detail**: `/automations/<automation_id>` displays normalized run details plus raw status JSON for a specific job.
+- **Automation Control**: Automation detail pages can open the output file location on the Windows automation machine and manually start an allowed process.
 
 ## Technology Stack
 
@@ -122,6 +123,30 @@ Each automation payload must include `automation_id`. The dashboard currently ex
 - `freightwaves_sonar`
 
 If an expected automation has not posted a status file yet, the homepage shows it as `missing`. Use `AUTOMATION_STATUS_PATHS` for optional direct file paths when a status JSON is mounted into the container instead of posted.
+
+### Automation control setup
+
+Manual controls require a small helper process on the Windows automation machine because the dashboard container runs on Proxmox and cannot open `C:\...` paths or start local Windows batch files by itself.
+
+On the Windows automation machine:
+
+```cmd
+setx AUTOMATION_CONTROL_TOKEN "<shared-control-token>"
+cd C:\Users\JOSH\VSCodeProjects\API\API_Dashboard
+run_automation_control_agent.bat
+```
+
+The helper listens on port `5015` by default and only exposes commands listed in `automation_control_agent.py`.
+
+In the dashboard container or Portainer stack, set:
+
+```bash
+AUTOMATION_CONTROL_URL=http://192.168.1.109:5015
+AUTOMATION_CONTROL_TOKEN=<same-shared-control-token>
+AUTOMATION_OPERATOR_TOKEN=<token-entered-in-dashboard-ui>
+```
+
+`AUTOMATION_CONTROL_TOKEN` authenticates the dashboard to the Windows helper. `AUTOMATION_OPERATOR_TOKEN` is entered by a person in the dashboard before either button works, so the LAN page cannot start jobs without that extra token. Keep both values out of git.
 
 ### Supabase usage snapshot setup
 

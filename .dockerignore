@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+__pycache__/
+*.py[cod]
+.codex_test_deps/
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+*.log
+*.db
+*.sqlite
+*.sqlite3

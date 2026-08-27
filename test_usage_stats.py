@@ -233,6 +233,45 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["latest_data_period"], "2026-08-25")
 
+    def test_automation_control_fails_closed_when_not_configured(self):
+        original_url = dashboard_app.AUTOMATION_CONTROL_URL
+        original_control_token = dashboard_app.AUTOMATION_CONTROL_TOKEN
+        original_operator_token = dashboard_app.AUTOMATION_OPERATOR_TOKEN
+        dashboard_app.AUTOMATION_CONTROL_URL = ""
+        dashboard_app.AUTOMATION_CONTROL_TOKEN = ""
+        dashboard_app.AUTOMATION_OPERATOR_TOKEN = ""
+
+        try:
+            client = dashboard_app.app.test_client()
+            response = client.post("/api/automation_control/diesel_prices/run")
+        finally:
+            dashboard_app.AUTOMATION_CONTROL_URL = original_url
+            dashboard_app.AUTOMATION_CONTROL_TOKEN = original_control_token
+            dashboard_app.AUTOMATION_OPERATOR_TOKEN = original_operator_token
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_automation_control_requires_operator_token(self):
+        original_url = dashboard_app.AUTOMATION_CONTROL_URL
+        original_control_token = dashboard_app.AUTOMATION_CONTROL_TOKEN
+        original_operator_token = dashboard_app.AUTOMATION_OPERATOR_TOKEN
+        dashboard_app.AUTOMATION_CONTROL_URL = "http://127.0.0.1:5015"
+        dashboard_app.AUTOMATION_CONTROL_TOKEN = "control-token"
+        dashboard_app.AUTOMATION_OPERATOR_TOKEN = "operator-token"
+
+        try:
+            client = dashboard_app.app.test_client()
+            response = client.post(
+                "/api/automation_control/diesel_prices/run",
+                headers={"X-Automation-Operator-Token": "wrong-token"},
+            )
+        finally:
+            dashboard_app.AUTOMATION_CONTROL_URL = original_url
+            dashboard_app.AUTOMATION_CONTROL_TOKEN = original_control_token
+            dashboard_app.AUTOMATION_OPERATOR_TOKEN = original_operator_token
+
+        self.assertEqual(response.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

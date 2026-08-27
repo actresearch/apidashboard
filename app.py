@@ -37,6 +37,9 @@ PORT_MONITOR_STATUS_TOKEN = os.getenv("PORT_MONITOR_STATUS_TOKEN", "")
 AUTOMATION_STATUS_DIR = os.getenv("AUTOMATION_STATUS_DIR", "/app/logs/automations")
 AUTOMATION_STATUS_PATHS = os.getenv("AUTOMATION_STATUS_PATHS", "")
 AUTOMATION_STATUS_TOKEN = os.getenv("AUTOMATION_STATUS_TOKEN", "")
+AUTOMATION_CONTROL_URL = os.getenv("AUTOMATION_CONTROL_URL", "")
+AUTOMATION_CONTROL_TOKEN = os.getenv("AUTOMATION_CONTROL_TOKEN", "")
+AUTOMATION_OPERATOR_TOKEN = os.getenv("AUTOMATION_OPERATOR_TOKEN", "")
 EXPECTED_AUTOMATIONS = [
     {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
     {"automation_id": "aar_weekly_rail", "automation": "AAR Weekly Rail Feed", "cadence": "weekly"},
@@ -59,6 +62,55 @@ def ports_dashboard():
 @app.route('/automations/<automation_id>')
 def automation_detail(automation_id):
     return render_template('automation_detail.html', automation_id=automation_id)
+
+
+@app.route('/api/automation_control/<automation_id>/<action>', methods=['POST'])
+def automation_control(automation_id, action):
+    if action not in {"open-location", "run"}:
+        return jsonify({"error": "Unsupported automation control action"}), 400
+    if not AUTOMATION_CONTROL_URL or not AUTOMATION_CONTROL_TOKEN or not AUTOMATION_OPERATOR_TOKEN:
+        return jsonify({
+            "error": "Automation control is not configured",
+            "setup_hint": (
+                "Set AUTOMATION_CONTROL_URL, AUTOMATION_CONTROL_TOKEN, and "
+                "AUTOMATION_OPERATOR_TOKEN for the dashboard service."
+            ),
+        }), 503
+
+    provided = request.headers.get("X-Automation-Operator-Token", "")
+    if provided != AUTOMATION_OPERATOR_TOKEN:
+        return jsonify({"error": "Invalid automation operator token"}), 401
+
+    target_url = (
+        f"{AUTOMATION_CONTROL_URL.rstrip('/')}/automations/"
+        f"{urllib.parse.quote(automation_id)}/{action}"
+    )
+    proxy_request = urllib.request.Request(
+        target_url,
+        method="POST",
+        data=b"{}",
+        headers={
+            "Authorization": f"Bearer {AUTOMATION_CONTROL_TOKEN}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "ACT-API-Dashboard/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(proxy_request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+            return jsonify(payload), response.status
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read().decode("utf-8") or "{}")
+        except Exception:
+            payload = {"error": str(e)}
+        return jsonify(payload), e.code
+    except Exception as e:
+        return jsonify({
+            "error": "Unable to reach automation control agent",
+            "detail": str(e),
+        }), 502
 
 
 @app.route('/health')
@@ -357,6 +409,7 @@ def normalize_automation_status(payload, include_raw=False):
         "new_files": payload.get("new_files"),
         "output_path": payload.get("output_path"),
         "detail_url": payload.get("detail_url") or f"/automations/{automation_id}",
+        "control_enabled": automation_control_configured(),
         "indicators": indicators[:3],
         "raw": payload if include_raw else None,
     }
@@ -382,6 +435,7 @@ def normalize_missing_automation(expected):
         "new_files": None,
         "output_path": None,
         "detail_url": expected.get("detail_url") or f"/automations/{expected['automation_id']}",
+        "control_enabled": automation_control_configured(),
         "indicators": ["No status JSON has been received."],
     }
 
@@ -425,6 +479,7 @@ def normalize_port_status_as_automation(payload, include_raw=False):
         "new_files": None,
         "output_path": payload.get("output_path"),
         "detail_url": "/ports",
+        "control_enabled": automation_control_configured(),
         "indicators": indicators,
         "raw": payload if include_raw else None,
     }
@@ -444,6 +499,10 @@ def normalize_status_value(status):
     if status == "missing":
         return "missing"
     return "other"
+
+
+def automation_control_configured():
+    return bool(AUTOMATION_CONTROL_URL and AUTOMATION_CONTROL_TOKEN and AUTOMATION_OPERATOR_TOKEN)
 
 
 def status_sort_order(status):
