@@ -9,6 +9,7 @@ A real-time API monitoring dashboard built with Flask and modern web technologie
 - **Live Streaming Data**: Real-time updates for API health, watchdog activity, and FTP automations
 - **Port Data Status**: Operational view of the major-port data monitor status file
 - **Automation Status**: Homepage triage rows and detail pages for recurring data jobs
+- **Zoom Workplace Chat Alerts**: Optional low-detail failure notifications for monitored dashboard components
 - **Responsive Design**: Modern UI built with Tailwind CSS
 - **24-hour and 30-day Analytics**: Comprehensive usage statistics and trends
 - **Efficient API Usage Snapshot**: 30-day Supabase usage rankings are read from a small daily aggregate instead of raw log rows
@@ -147,6 +148,40 @@ AUTOMATION_OPERATOR_TOKEN=<token-entered-in-dashboard-ui>
 ```
 
 `AUTOMATION_CONTROL_TOKEN` authenticates the dashboard to the Windows helper. `AUTOMATION_OPERATOR_TOKEN` is entered by a person in the dashboard before either button works, so the LAN page cannot start jobs without that extra token. Keep both values out of git.
+
+### Zoom alert setup
+
+The dashboard can send low-detail Zoom Workplace Chat alerts for monitored failures. It sends only the component, reason, timestamp, and a prompt to check the dashboard for details. It does not send internal file paths, URLs, filenames, raw API names, usage rows, or raw error messages.
+
+Configure Zoom's Incoming Webhook Chatbot for the target channel and set these values in the dashboard container or Portainer stack:
+
+```bash
+DASHBOARD_ZOOM_WEBHOOK_URL=<zoom-incoming-webhook-endpoint>
+DASHBOARD_ZOOM_WEBHOOK_TOKEN=<zoom-verification-token>
+DASHBOARD_ZOOM_DEDUPE_SECONDS=1800
+```
+
+Initial failure rules:
+
+- `api_testing`: any streamed endpoint status other than `HTTP 200`.
+- `folder_monitor`: `worker_health_failed`, `error`, `failed`, or `failure`.
+- `ftp_transfer`: `not_authenticated`, `script_failed`, `error`, `failed`, or `failure`.
+- `usage_stats`: missing Supabase config or failure loading the daily usage snapshot.
+- posted automation status: normalized `error` or `missing`.
+- posted port status: normalized port monitor `error` or `missing`.
+
+Repeated alerts for the same component and reason are deduped for `DASHBOARD_ZOOM_DEDUPE_SECONDS`.
+
+After deployment, send live test alerts from a trusted machine by posting to the fixed allow-list endpoint with the dashboard operator token:
+
+```bash
+curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/api_testing -H "X-Automation-Operator-Token: <operator-token>"
+curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/folder_monitor -H "X-Automation-Operator-Token: <operator-token>"
+curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/ftp_transfer -H "X-Automation-Operator-Token: <operator-token>"
+curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/usage_stats -H "X-Automation-Operator-Token: <operator-token>"
+curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/port_data_monitor -H "X-Automation-Operator-Token: <operator-token>"
+curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/automation_status -H "X-Automation-Operator-Token: <operator-token>"
+```
 
 ### Supabase usage snapshot setup
 

@@ -24,6 +24,9 @@ Set these in the Portainer stack editor or in a stack env file:
 - `PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json`
 - `PORT_MONITOR_STATUS_URL=`
 - `PORT_MONITOR_STATUS_TOKEN=<shared-status-token>`
+- `DASHBOARD_ZOOM_WEBHOOK_URL=<zoom-incoming-webhook-endpoint>`
+- `DASHBOARD_ZOOM_WEBHOOK_TOKEN=<zoom-verification-token>`
+- `DASHBOARD_ZOOM_DEDUPE_SECONDS=1800`
 - `SUPABASE_URL=https://your-project.supabase.co`
 - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
 - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -35,6 +38,8 @@ Notes:
 - `PORT_MONITOR_STATUS_PATH` should point to the port monitor JSON status file inside the container. The default expects the file to be present in the mounted dashboard log directory.
 - `PORT_MONITOR_STATUS_URL` can point to an internal URL serving the JSON. If set, it takes precedence over `PORT_MONITOR_STATUS_PATH`.
 - `PORT_MONITOR_STATUS_TOKEN` is required if the port monitor POSTs status updates to `/api/port_data_status`.
+- `DASHBOARD_ZOOM_WEBHOOK_URL` and `DASHBOARD_ZOOM_WEBHOOK_TOKEN` enable low-detail Zoom Workplace Chat failure alerts.
+- `DASHBOARD_ZOOM_DEDUPE_SECONDS` suppresses repeated alerts for the same component and reason.
 - `SUPABASE_SERVICE_ROLE_KEY` is a secret. Set it in Portainer; do not commit a real key to the repo.
 - Portainer stack environment values are used for compose substitution. `docker-compose.yml` must also list a value under the service `environment:` block for it to appear inside the container.
 - This app does not currently require Redis for the stack defined in this repo.
@@ -54,6 +59,9 @@ Notes:
    - `PORT_MONITOR_STATUS_PATH=/app/logs/Major US Port Data Monitor.status.json`
    - `PORT_MONITOR_STATUS_URL=`
    - `PORT_MONITOR_STATUS_TOKEN=<shared-status-token>`
+   - `DASHBOARD_ZOOM_WEBHOOK_URL=<zoom-incoming-webhook-endpoint>`
+   - `DASHBOARD_ZOOM_WEBHOOK_TOKEN=<zoom-verification-token>`
+   - `DASHBOARD_ZOOM_DEDUPE_SECONDS=1800`
    - `SUPABASE_URL=https://your-project.supabase.co`
    - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
    - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -122,6 +130,14 @@ For the default compose settings, copy or sync the JSON into the host directory 
 
 When the dashboard is hosted on a different machine than the port monitor, set `status_publish_url` in the port monitor config to `http://<dashboard-host>:5005/api/port_data_status` and set the same `PORT_MONITOR_STATUS_TOKEN` in both environments. The dashboard stores posted updates at `PORT_MONITOR_STATUS_PATH`.
 
+### Zoom alerts do not appear
+
+Confirm the dashboard container has `DASHBOARD_ZOOM_WEBHOOK_URL` and `DASHBOARD_ZOOM_WEBHOOK_TOKEN` set. `/health` reports `zoom_notifications` as `configured` when both values are visible to the app.
+
+Alerts are intentionally low-detail and deduped by component and reason for `DASHBOARD_ZOOM_DEDUPE_SECONDS`, which defaults to 1800 seconds.
+
+To send live test alerts after deployment, POST to `/api/zoom_alert_test/<component>` with `X-Automation-Operator-Token`. Supported components are `api_testing`, `folder_monitor`, `ftp_transfer`, `usage_stats`, `port_data_monitor`, and `automation_status`.
+
 ## Quick Verification
 
 Before you rely on auto-updates, confirm:
@@ -130,6 +146,7 @@ Before you rely on auto-updates, confirm:
 - the workflow has produced a `latest` tag
 - Portainer can pull the image
 - `/health` responds successfully after deployment
+- `/health` reports `zoom_notifications` as `configured` if Zoom alerts are expected
 - `/ports` returns the port data status page
 - `/api/port_data_status` returns the generated port monitor JSON
 - Watchtower is running in the stack

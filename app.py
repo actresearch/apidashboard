@@ -2,6 +2,7 @@ import os
 import json
 import glob
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +41,10 @@ AUTOMATION_STATUS_TOKEN = os.getenv("AUTOMATION_STATUS_TOKEN", "")
 AUTOMATION_CONTROL_URL = os.getenv("AUTOMATION_CONTROL_URL", "")
 AUTOMATION_CONTROL_TOKEN = os.getenv("AUTOMATION_CONTROL_TOKEN", "")
 AUTOMATION_OPERATOR_TOKEN = os.getenv("AUTOMATION_OPERATOR_TOKEN", "")
+DASHBOARD_ZOOM_WEBHOOK_URL = os.getenv("DASHBOARD_ZOOM_WEBHOOK_URL", "")
+DASHBOARD_ZOOM_WEBHOOK_TOKEN = os.getenv("DASHBOARD_ZOOM_WEBHOOK_TOKEN", "")
+DASHBOARD_ZOOM_DEDUPE_SECONDS = int(os.getenv("DASHBOARD_ZOOM_DEDUPE_SECONDS", "1800"))
+ZOOM_NOTIFICATION_CACHE = {}
 EXPECTED_AUTOMATIONS = [
     {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
     {"automation_id": "aar_weekly_rail", "automation": "AAR Weekly Rail Feed", "cadence": "weekly"},
@@ -113,9 +118,48 @@ def automation_control(automation_id, action):
         }), 502
 
 
+@app.route('/api/zoom_alert_test/<component>', methods=['POST'])
+def zoom_alert_test(component):
+    if not AUTOMATION_OPERATOR_TOKEN:
+        return jsonify({
+            "error": "Zoom alert testing is not configured",
+            "setup_hint": "Set AUTOMATION_OPERATOR_TOKEN before allowing dashboard-triggered test alerts.",
+        }), 503
+
+    provided = request.headers.get("X-Automation-Operator-Token", "")
+    if provided != AUTOMATION_OPERATOR_TOKEN:
+        return jsonify({"error": "Invalid automation operator token"}), 401
+
+    test_cases = {
+        "api_testing": ("api_non_200_test", "api_testing"),
+        "folder_monitor": ("folder_monitor_failure_test", "folder_monitor"),
+        "ftp_transfer": ("ftp_failure_test", "ftp_transfer"),
+        "usage_stats": ("usage_stats_load_test", "usage_stats"),
+        "port_data_monitor": ("port_status_error_test", "port_data_monitor"),
+        "automation_status": ("automation_status_missing_test", "automation_status"),
+    }
+    if component not in test_cases:
+        return jsonify({
+            "error": "Unsupported Zoom alert test component",
+            "supported_components": sorted(test_cases),
+        }), 400
+
+    reason, alert_component = test_cases[component]
+    sent = notify_dashboard_failure(reason, alert_component, force=True)
+    return jsonify({
+        "status": "sent" if sent else "not_sent",
+        "component": alert_component,
+        "reason": reason,
+        "zoom_notifications": "configured" if zoom_notifications_configured() else "not_configured",
+    }), 200 if sent else 503
+
+
 @app.route('/health')
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({
+        "status": "ok",
+        "zoom_notifications": "configured" if zoom_notifications_configured() else "not_configured",
+    })
 
 
 @app.route('/api-health/stream')
@@ -138,10 +182,17 @@ def stream_proxy(upstream_url):
         while True:
             try:
                 with urllib.request.urlopen(upstream_url, timeout=70) as upstream:
+                    event_name = "message"
                     for line in upstream:
+                        inspect_stream_line(upstream_url, event_name, line)
+                        if line.startswith(b"event:"):
+                            event_name = line.decode("utf-8", errors="replace").split(":", 1)[1].strip() or "message"
+                        elif line.strip() == b"":
+                            event_name = "message"
                         yield line
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 message = str(e).replace("\n", " ")
+                notify_dashboard_failure("stream_proxy", stream_component_name(upstream_url))
                 yield f"event: error\ndata: {message}\n\n".encode("utf-8")
 
     return Response(
@@ -156,6 +207,7 @@ def stream_proxy(upstream_url):
 @app.route('/api/usage_stats')
 def api_usage_stats():
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        notify_dashboard_failure("usage_stats_config", "usage_stats")
         return jsonify({
             "error": "Supabase environment variables are not configured",
             "setup_hint": "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY for the dashboard service.",
@@ -164,6 +216,7 @@ def api_usage_stats():
     try:
         rows = fetch_supabase_usage_snapshot()
     except Exception as e:
+        notify_dashboard_failure("usage_stats_load", "usage_stats")
         return jsonify({
             "error": "Unable to load Supabase usage stats",
             "detail": str(e),
@@ -250,6 +303,7 @@ def receive_port_monitor_status():
     if not isinstance(payload, dict):
         return jsonify({"error": "Expected JSON object payload"}), 400
     payload = normalize_port_monitor_status(payload)
+    notify_for_automation_payload(normalize_port_status_as_automation(payload), "port_status")
 
     directory = os.path.dirname(PORT_MONITOR_STATUS_PATH)
     if directory:
@@ -284,6 +338,7 @@ def receive_automation_status():
         return jsonify({"error": "automation_id is required"}), 400
 
     normalized = normalize_automation_status(payload)
+    notify_for_automation_payload(normalized, "automation_status")
     os.makedirs(AUTOMATION_STATUS_DIR, exist_ok=True)
     status_path = os.path.join(AUTOMATION_STATUS_DIR, f"{safe_status_filename(automation_id)}.json")
     with open(status_path, "w", encoding="utf-8") as handle:
@@ -578,6 +633,123 @@ def build_usage_snapshot_payload(rows):
         "window_start": window_start,
         "window_end": window_end,
     }
+
+
+def inspect_stream_line(upstream_url, event_name, line):
+    if not line.startswith(b"data:"):
+        return
+
+    component = stream_component_name(upstream_url)
+    data = line.decode("utf-8", errors="replace").split(":", 1)[1].strip()
+    if not data:
+        return
+
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        if event_name == "error":
+            notify_dashboard_failure("stream_event_error", component)
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    reason = classify_stream_failure(component, payload)
+    if reason:
+        notify_dashboard_failure(reason, component)
+
+
+def classify_stream_failure(component, payload):
+    status = str(payload.get("status") or "").lower()
+
+    if component == "api_testing":
+        return None if payload.get("status") == "HTTP 200" else "api_non_200"
+
+    if component == "folder_monitor" and status in {"worker_health_failed", "error", "failed", "failure"}:
+        return "folder_monitor_failure"
+
+    if component == "ftp_transfer" and status in {"not_authenticated", "script_failed", "error", "failed", "failure"}:
+        return "ftp_failure"
+
+    return None
+
+
+def stream_component_name(upstream_url):
+    if upstream_url == API_HEALTH_STREAM_URL:
+        return "api_testing"
+    if upstream_url == WATCHDOG_STREAM_URL:
+        return "folder_monitor"
+    if upstream_url == FTP_STREAM_URL:
+        return "ftp_transfer"
+    return "stream"
+
+
+def notify_for_automation_payload(payload, source):
+    status = payload.get("status")
+    if status == "error":
+        notify_dashboard_failure(f"{source}_error", payload.get("automation_id") or "automation")
+    elif status == "missing":
+        notify_dashboard_failure(f"{source}_missing", payload.get("automation_id") or "automation")
+
+
+def notify_dashboard_failure(reason, component, force=False):
+    if not zoom_notifications_configured():
+        return False
+
+    reason = str(reason or "failure")
+    component = str(component or "dashboard")
+    dedupe_key = f"{component}|{reason}"
+    now = time.time()
+    last_sent = ZOOM_NOTIFICATION_CACHE.get(dedupe_key)
+    if not force and last_sent and now - last_sent < DASHBOARD_ZOOM_DEDUPE_SECONDS:
+        return False
+
+    fields = {
+        "Alert": "API Dashboard failure",
+        "Component": component,
+        "Reason": reason,
+        "Generated UTC": dashboard_utc_now(),
+        "Detail": "Check the API dashboard for details.",
+    }
+    try:
+        send_zoom_fields_message(DASHBOARD_ZOOM_WEBHOOK_URL, DASHBOARD_ZOOM_WEBHOOK_TOKEN, fields)
+    except Exception:
+        return False
+    ZOOM_NOTIFICATION_CACHE[dedupe_key] = now
+    return True
+
+
+def zoom_notifications_configured():
+    return bool(DASHBOARD_ZOOM_WEBHOOK_URL and DASHBOARD_ZOOM_WEBHOOK_TOKEN)
+
+
+def send_zoom_fields_message(webhook_url, token, fields):
+    request = urllib.request.Request(
+        add_query_param(webhook_url, "format", "fields"),
+        data=json.dumps(fields, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": token,
+            "User-Agent": "ACT-API-Dashboard/1.0 (+zoom alerts)",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body = response.read().decode("utf-8", errors="replace")
+        if response.status >= 400:
+            raise RuntimeError(f"HTTP {response.status}: {body}")
+
+
+def add_query_param(url, name, value):
+    parts = urllib.parse.urlsplit(url)
+    query_params = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    if any(key == name for key, _ in query_params):
+        return url
+    query_params.append((name, value))
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(query_params), parts.fragment)
+    )
 
 if __name__ == '__main__':
     app.run(

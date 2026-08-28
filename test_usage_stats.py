@@ -272,6 +272,91 @@ class UsageStatsSnapshotTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
+    def test_stream_failure_classification_by_component(self):
+        self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"status": "HTTP 200"}))
+        self.assertEqual(
+            dashboard_app.classify_stream_failure("api_testing", {"status": "HTTP 500"}),
+            "api_non_200",
+        )
+        self.assertEqual(
+            dashboard_app.classify_stream_failure("folder_monitor", {"status": "worker_health_failed"}),
+            "folder_monitor_failure",
+        )
+        self.assertIsNone(dashboard_app.classify_stream_failure("folder_monitor", {"status": "modified_file"}))
+        self.assertEqual(
+            dashboard_app.classify_stream_failure("ftp_transfer", {"status": "not_authenticated"}),
+            "ftp_failure",
+        )
+        self.assertIsNone(dashboard_app.classify_stream_failure("ftp_transfer", {"status": "script_ran"}))
+
+    def test_zoom_notification_uses_low_detail_payload_and_dedupes(self):
+        original_url = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL
+        original_token = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN
+        original_cache = dashboard_app.ZOOM_NOTIFICATION_CACHE
+        original_send = dashboard_app.send_zoom_fields_message
+        sent = []
+
+        dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL = "https://zoom.example/webhook"
+        dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN = "test-token"
+        dashboard_app.ZOOM_NOTIFICATION_CACHE = {}
+        dashboard_app.send_zoom_fields_message = lambda url, token, fields: sent.append(fields)
+
+        try:
+            first = dashboard_app.notify_dashboard_failure("api_non_200", "api_testing")
+            second = dashboard_app.notify_dashboard_failure("api_non_200", "api_testing")
+        finally:
+            dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL = original_url
+            dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN = original_token
+            dashboard_app.ZOOM_NOTIFICATION_CACHE = original_cache
+            dashboard_app.send_zoom_fields_message = original_send
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["Alert"], "API Dashboard failure")
+        self.assertEqual(sent[0]["Component"], "api_testing")
+        self.assertEqual(sent[0]["Reason"], "api_non_200")
+        self.assertEqual(sent[0]["Detail"], "Check the API dashboard for details.")
+        self.assertNotIn("url", sent[0])
+        self.assertNotIn("path", sent[0])
+        self.assertNotIn("file", sent[0])
+
+    def test_zoom_alert_test_requires_operator_token_and_allow_list(self):
+        original_operator_token = dashboard_app.AUTOMATION_OPERATOR_TOKEN
+        original_url = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL
+        original_token = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN
+        original_send = dashboard_app.send_zoom_fields_message
+        sent = []
+
+        dashboard_app.AUTOMATION_OPERATOR_TOKEN = "operator-token"
+        dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL = "https://zoom.example/webhook"
+        dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN = "test-token"
+        dashboard_app.send_zoom_fields_message = lambda url, token, fields: sent.append(fields)
+
+        try:
+            client = dashboard_app.app.test_client()
+            unauthorized = client.post("/api/zoom_alert_test/api_testing")
+            unsupported = client.post(
+                "/api/zoom_alert_test/raw_path",
+                headers={"X-Automation-Operator-Token": "operator-token"},
+            )
+            response = client.post(
+                "/api/zoom_alert_test/api_testing",
+                headers={"X-Automation-Operator-Token": "operator-token"},
+            )
+        finally:
+            dashboard_app.AUTOMATION_OPERATOR_TOKEN = original_operator_token
+            dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL = original_url
+            dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN = original_token
+            dashboard_app.send_zoom_fields_message = original_send
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(unsupported.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "sent")
+        self.assertEqual(sent[0]["Component"], "api_testing")
+        self.assertEqual(sent[0]["Reason"], "api_non_200_test")
+
 
 if __name__ == "__main__":
     unittest.main()
