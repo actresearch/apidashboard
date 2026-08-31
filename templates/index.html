@@ -656,11 +656,21 @@
       if (data.type === 'api_check') {
         const log = document.getElementById('api-health-log');
         const entry = document.createElement('div');
-        const apiCheckOk = data.ok === true || data.statusCode === 200 || data.status === 'HTTP 200' || data.status === 'PASS';
+        const rawStatus = String(data.status || '').trim();
+        const normalizedStatus = rawStatus.toLowerCase();
+        const rawStatusCode = data.statusCode ?? data.status_code ?? data.httpStatus ?? data.http_status;
+        const statusCode = Number(rawStatusCode);
+        const apiCheckOk = data.ok === true ||
+          statusCode === 200 ||
+          normalizedStatus === 'pass' ||
+          normalizedStatus === 'ok' ||
+          normalizedStatus === 'http 200' ||
+          normalizedStatus.startsWith('http 200 ');
         const statusColor = apiCheckOk ? 'text-green-600' : 'text-red-600';
-        const statusText = data.statusCode
-          ? `${data.status || (apiCheckOk ? 'PASS' : 'FAIL')} (HTTP ${data.statusCode})`
-          : data.status;
+        const statusLabel = rawStatus || (apiCheckOk ? 'PASS' : 'FAIL');
+        const statusText = Number.isFinite(statusCode)
+          ? `${statusLabel} (HTTP ${statusCode})`
+          : statusLabel;
         entry.innerHTML = `
           <div class="border-b border-gray-100 pb-2">
             <p class="font-medium">${data.endpoint}</p>

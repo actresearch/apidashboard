@@ -296,6 +296,16 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         )
         self.assertIsNone(dashboard_app.classify_stream_failure("ftp_transfer", {"status": "script_ran"}))
 
+    def test_api_health_template_colors_pass_and_fail_statuses(self):
+        source = pathlib.Path("templates/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("const rawStatus = String(data.status || '').trim();", source)
+        self.assertIn("const normalizedStatus = rawStatus.toLowerCase();", source)
+        self.assertIn("data.statusCode ?? data.status_code ?? data.httpStatus ?? data.http_status", source)
+        self.assertIn("normalizedStatus === 'pass'", source)
+        self.assertIn("statusCode === 200", source)
+        self.assertIn("const statusColor = apiCheckOk ? 'text-green-600' : 'text-red-600';", source)
+
     def test_zoom_notification_uses_low_detail_payload_and_dedupes(self):
         original_url = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL
         original_token = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN
