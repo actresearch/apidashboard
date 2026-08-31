@@ -27,6 +27,9 @@ Set these in the Portainer stack editor or in a stack env file:
 - `DASHBOARD_ZOOM_WEBHOOK_URL=<zoom-incoming-webhook-endpoint>`
 - `DASHBOARD_ZOOM_WEBHOOK_TOKEN=<zoom-verification-token>`
 - `DASHBOARD_ZOOM_DEDUPE_SECONDS=1800`
+- `DASHBOARD_ZOOM_DAILY_STATUS_ENABLED=true`
+- `DASHBOARD_ZOOM_DAILY_STATUS_TIME=08:00`
+- `DASHBOARD_ZOOM_DAILY_STATUS_TZ=America/New_York`
 - `SUPABASE_URL=https://your-project.supabase.co`
 - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
 - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -40,6 +43,7 @@ Notes:
 - `PORT_MONITOR_STATUS_TOKEN` is required if the port monitor POSTs status updates to `/api/port_data_status`.
 - `DASHBOARD_ZOOM_WEBHOOK_URL` and `DASHBOARD_ZOOM_WEBHOOK_TOKEN` enable low-detail Zoom Workplace Chat failure alerts.
 - `DASHBOARD_ZOOM_DEDUPE_SECONDS` suppresses repeated alerts for the same component and reason.
+- `DASHBOARD_ZOOM_DAILY_STATUS_*` controls the Monday-Friday status digest. `America/New_York` follows Eastern daylight/standard time.
 - `SUPABASE_SERVICE_ROLE_KEY` is a secret. Set it in Portainer; do not commit a real key to the repo.
 - Portainer stack environment values are used for compose substitution. `docker-compose.yml` must also list a value under the service `environment:` block for it to appear inside the container.
 - This app does not currently require Redis for the stack defined in this repo.
@@ -62,6 +66,9 @@ Notes:
    - `DASHBOARD_ZOOM_WEBHOOK_URL=<zoom-incoming-webhook-endpoint>`
    - `DASHBOARD_ZOOM_WEBHOOK_TOKEN=<zoom-verification-token>`
    - `DASHBOARD_ZOOM_DEDUPE_SECONDS=1800`
+   - `DASHBOARD_ZOOM_DAILY_STATUS_ENABLED=true`
+   - `DASHBOARD_ZOOM_DAILY_STATUS_TIME=08:00`
+   - `DASHBOARD_ZOOM_DAILY_STATUS_TZ=America/New_York`
    - `SUPABASE_URL=https://your-project.supabase.co`
    - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
    - `SUPABASE_USAGE_SNAPSHOT_TABLE=api_usage_stats_snapshot`
@@ -137,6 +144,8 @@ Confirm the dashboard container has `DASHBOARD_ZOOM_WEBHOOK_URL` and `DASHBOARD_
 Alerts are intentionally low-detail and deduped by component and reason for `DASHBOARD_ZOOM_DEDUPE_SECONDS`, which defaults to 1800 seconds.
 
 To send live test alerts after deployment, POST to `/api/zoom_alert_test/<component>` with `X-Automation-Operator-Token`. Supported components are `api_testing`, `folder_monitor`, `ftp_transfer`, `usage_stats`, `port_data_monitor`, and `automation_status`.
+
+To test the weekday daily status digest, POST to `/api/zoom_daily_status_test` with `X-Automation-Operator-Token`.
 
 ## Quick Verification
 

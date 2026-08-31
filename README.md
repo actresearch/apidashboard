@@ -159,6 +159,9 @@ Configure Zoom's Incoming Webhook Chatbot for the target channel and set these v
 DASHBOARD_ZOOM_WEBHOOK_URL=<zoom-incoming-webhook-endpoint>
 DASHBOARD_ZOOM_WEBHOOK_TOKEN=<zoom-verification-token>
 DASHBOARD_ZOOM_DEDUPE_SECONDS=1800
+DASHBOARD_ZOOM_DAILY_STATUS_ENABLED=true
+DASHBOARD_ZOOM_DAILY_STATUS_TIME=08:00
+DASHBOARD_ZOOM_DAILY_STATUS_TZ=America/New_York
 ```
 
 Initial failure rules:
@@ -172,6 +175,17 @@ Initial failure rules:
 
 Repeated alerts for the same component and reason are deduped for `DASHBOARD_ZOOM_DEDUPE_SECONDS`.
 
+The dashboard also sends a weekday daily status digest at `DASHBOARD_ZOOM_DAILY_STATUS_TIME` in `DASHBOARD_ZOOM_DAILY_STATUS_TZ`. With the default `America/New_York` setting, the alert follows Eastern daylight/standard time changes. The digest includes only component status labels and counts:
+
+- API testing
+- Folder monitor
+- FTP transfer
+- Usage stats
+- Automations
+- Port data
+
+The daily digest writes its last-sent date to `DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH` so container restarts do not send duplicate same-day digests.
+
 After deployment, send live test alerts from a trusted machine by posting to the fixed allow-list endpoint with the dashboard operator token:
 
 ```bash
@@ -181,6 +195,12 @@ curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/ftp_transfer -H "X
 curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/usage_stats -H "X-Automation-Operator-Token: <operator-token>"
 curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/port_data_monitor -H "X-Automation-Operator-Token: <operator-token>"
 curl -X POST http://<dashboard-host>:5005/api/zoom_alert_test/automation_status -H "X-Automation-Operator-Token: <operator-token>"
+```
+
+Send a live daily status digest test:
+
+```bash
+curl -X POST http://<dashboard-host>:5005/api/zoom_daily_status_test -H "X-Automation-Operator-Token: <operator-token>"
 ```
 
 ### Supabase usage snapshot setup

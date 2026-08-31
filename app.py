@@ -2,10 +2,13 @@ import os
 import json
 import glob
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, render_template, jsonify, make_response, request, stream_with_context
 
@@ -44,7 +47,15 @@ AUTOMATION_OPERATOR_TOKEN = os.getenv("AUTOMATION_OPERATOR_TOKEN", "")
 DASHBOARD_ZOOM_WEBHOOK_URL = os.getenv("DASHBOARD_ZOOM_WEBHOOK_URL", "")
 DASHBOARD_ZOOM_WEBHOOK_TOKEN = os.getenv("DASHBOARD_ZOOM_WEBHOOK_TOKEN", "")
 DASHBOARD_ZOOM_DEDUPE_SECONDS = int(os.getenv("DASHBOARD_ZOOM_DEDUPE_SECONDS", "1800"))
+DASHBOARD_ZOOM_DAILY_STATUS_ENABLED = os.getenv("DASHBOARD_ZOOM_DAILY_STATUS_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+DASHBOARD_ZOOM_DAILY_STATUS_TIME = os.getenv("DASHBOARD_ZOOM_DAILY_STATUS_TIME", "08:00")
+DASHBOARD_ZOOM_DAILY_STATUS_TZ = os.getenv("DASHBOARD_ZOOM_DAILY_STATUS_TZ", "America/New_York")
+DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH = os.getenv(
+    "DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH",
+    "/app/logs/zoom_daily_status_state.json",
+)
 ZOOM_NOTIFICATION_CACHE = {}
+DAILY_STATUS_THREAD_STARTED = False
 EXPECTED_AUTOMATIONS = [
     {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
     {"automation_id": "aar_weekly_rail", "automation": "AAR Weekly Rail Feed", "cadence": "weekly"},
@@ -154,11 +165,31 @@ def zoom_alert_test(component):
     }), 200 if sent else 503
 
 
+@app.route('/api/zoom_daily_status_test', methods=['POST'])
+def zoom_daily_status_test():
+    if not AUTOMATION_OPERATOR_TOKEN:
+        return jsonify({
+            "error": "Zoom daily status testing is not configured",
+            "setup_hint": "Set AUTOMATION_OPERATOR_TOKEN before allowing dashboard-triggered test alerts.",
+        }), 503
+
+    provided = request.headers.get("X-Automation-Operator-Token", "")
+    if provided != AUTOMATION_OPERATOR_TOKEN:
+        return jsonify({"error": "Invalid automation operator token"}), 401
+
+    sent = send_daily_status_digest(force=True)
+    return jsonify({
+        "status": "sent" if sent else "not_sent",
+        "zoom_notifications": "configured" if zoom_notifications_configured() else "not_configured",
+    }), 200 if sent else 503
+
+
 @app.route('/health')
 def health():
     return jsonify({
         "status": "ok",
         "zoom_notifications": "configured" if zoom_notifications_configured() else "not_configured",
+        "zoom_daily_status": "enabled" if DASHBOARD_ZOOM_DAILY_STATUS_ENABLED else "disabled",
     })
 
 
@@ -743,6 +774,215 @@ def send_zoom_fields_message(webhook_url, token, fields):
             raise RuntimeError(f"HTTP {response.status}: {body}")
 
 
+def send_daily_status_digest(force=False):
+    if not zoom_notifications_configured():
+        return False
+    if not force and not DASHBOARD_ZOOM_DAILY_STATUS_ENABLED:
+        return False
+
+    fields = build_daily_status_digest_fields()
+    try:
+        send_zoom_fields_message(DASHBOARD_ZOOM_WEBHOOK_URL, DASHBOARD_ZOOM_WEBHOOK_TOKEN, fields)
+    except Exception:
+        return False
+    return True
+
+
+def build_daily_status_digest_fields():
+    statuses = collect_daily_system_statuses()
+    fields = {
+        "Alert": "API Dashboard daily status",
+        "Generated UTC": dashboard_utc_now(),
+        "Schedule": f"Monday-Friday {DASHBOARD_ZOOM_DAILY_STATUS_TIME} {DASHBOARD_ZOOM_DAILY_STATUS_TZ}",
+    }
+    for key, value in statuses.items():
+        fields[key] = value
+    return fields
+
+
+def collect_daily_system_statuses():
+    return {
+        "API testing": summarize_api_testing_status(),
+        "Folder monitor": summarize_folder_monitor_status(),
+        "FTP transfer": summarize_stream_reachability(FTP_STREAM_URL),
+        "Usage stats": summarize_usage_stats_status(),
+        "Automations": summarize_automation_status(),
+        "Port data": summarize_port_data_status(),
+    }
+
+
+def summarize_api_testing_status():
+    try:
+        payload = fetch_json(api_health_status_url())
+        overall = payload.get("overallStatus")
+        passing = payload.get("passingEndpointCount")
+        total = payload.get("endpointCount") or payload.get("checkedEndpointCount")
+        if overall == "pass":
+            return f"ok ({passing}/{total} passing)"
+        if overall == "pending":
+            return "pending"
+        failing = payload.get("failingEndpointCount")
+        return f"error ({failing} failing)"
+    except Exception:
+        return "unavailable"
+
+
+def summarize_folder_monitor_status():
+    ping_ok = fetch_text_status(replace_stream_path(WATCHDOG_STREAM_URL, "ping")) == "pong"
+    redis_ok = False
+    try:
+        redis_payload = fetch_json(replace_stream_path(WATCHDOG_STREAM_URL, "redis-ping"))
+        redis_ok = redis_payload.get("status") == "ok"
+    except Exception:
+        redis_ok = False
+    if ping_ok and redis_ok:
+        return "ok"
+    if ping_ok:
+        return "warning"
+    return "unavailable"
+
+
+def summarize_stream_reachability(stream_url):
+    try:
+        with urllib.request.urlopen(stream_url, timeout=5):
+            return "ok"
+    except TimeoutError:
+        return "ok"
+    except Exception:
+        return "unavailable"
+
+
+def summarize_usage_stats_status():
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return "missing config"
+    try:
+        rows = fetch_supabase_usage_snapshot()
+        return f"ok ({len(rows)} rows)"
+    except Exception:
+        return "unavailable"
+
+
+def summarize_automation_status():
+    try:
+        payload = load_automation_statuses()
+        counts = payload.get("counts", {})
+        return (
+            f"ok {counts.get('ok', 0)}, "
+            f"warning {counts.get('warning', 0)}, "
+            f"missing {counts.get('missing', 0)}, "
+            f"error {counts.get('error', 0)}"
+        )
+    except Exception:
+        return "unavailable"
+
+
+def summarize_port_data_status():
+    try:
+        payload = load_port_monitor_status()
+        counts = payload.get("counts", {})
+        return f"ok {counts.get('ok', 0)}, warning {counts.get('warning', 0)}, error {counts.get('error', 0)}"
+    except Exception:
+        return "unavailable"
+
+
+def fetch_json(url):
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "ACT-API-Dashboard/1.0"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_text_status(url):
+    request = urllib.request.Request(url, headers={"Accept": "text/plain", "User-Agent": "ACT-API-Dashboard/1.0"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.read().decode("utf-8", errors="replace").strip()
+
+
+def api_health_status_url():
+    return replace_stream_path(API_HEALTH_STREAM_URL, "healthz")
+
+
+def replace_stream_path(url, replacement):
+    parts = urllib.parse.urlsplit(url)
+    path_parts = parts.path.rstrip("/").split("/")
+    if path_parts and path_parts[-1] == "stream":
+        path_parts[-1] = replacement
+    else:
+        path_parts.append(replacement)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/".join(path_parts), "", ""))
+
+
+def maybe_send_scheduled_daily_status(now=None):
+    now = now or datetime.now(daily_status_timezone())
+    if now.weekday() >= 5:
+        return False
+    hour, minute = parse_daily_status_time(DASHBOARD_ZOOM_DAILY_STATUS_TIME)
+    if (now.hour, now.minute) < (hour, minute):
+        return False
+
+    local_date = now.date().isoformat()
+    state = read_daily_status_state()
+    if state.get("last_sent_local_date") == local_date:
+        return False
+
+    if send_daily_status_digest():
+        write_daily_status_state({
+            "last_sent_local_date": local_date,
+            "last_sent_utc": dashboard_utc_now(),
+        })
+        return True
+    return False
+
+
+def daily_status_scheduler_loop():
+    while True:
+        maybe_send_scheduled_daily_status()
+        time.sleep(60)
+
+
+def start_daily_status_scheduler():
+    global DAILY_STATUS_THREAD_STARTED
+    if DAILY_STATUS_THREAD_STARTED or not DASHBOARD_ZOOM_DAILY_STATUS_ENABLED:
+        return
+    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+    DAILY_STATUS_THREAD_STARTED = True
+    thread = threading.Thread(target=daily_status_scheduler_loop, name="zoom-daily-status", daemon=True)
+    thread.start()
+
+
+def daily_status_timezone():
+    try:
+        return ZoneInfo(DASHBOARD_ZOOM_DAILY_STATUS_TZ)
+    except ZoneInfoNotFoundError:
+        return timezone.utc
+
+
+def parse_daily_status_time(value):
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value).strip())
+    if not match:
+        return 8, 0
+    hour = min(max(int(match.group(1)), 0), 23)
+    minute = min(max(int(match.group(2)), 0), 59)
+    return hour, minute
+
+
+def read_daily_status_state():
+    try:
+        with open(DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_daily_status_state(payload):
+    directory = os.path.dirname(DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
 def add_query_param(url, name, value):
     parts = urllib.parse.urlsplit(url)
     query_params = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
@@ -754,6 +994,7 @@ def add_query_param(url, name, value):
     )
 
 if __name__ == '__main__':
+    start_daily_status_scheduler()
     app.run(
         host="0.0.0.0",
         debug=os.getenv("FLASK_DEBUG", "0") == "1",

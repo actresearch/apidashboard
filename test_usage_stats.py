@@ -2,6 +2,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 import app as dashboard_app
 
@@ -362,6 +363,84 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertEqual(response.get_json()["status"], "sent")
         self.assertEqual(sent[0]["Component"], "api_testing")
         self.assertEqual(sent[0]["Reason"], "api_non_200_test")
+
+    def test_daily_status_digest_uses_summary_payload(self):
+        original_collect = dashboard_app.collect_daily_system_statuses
+        dashboard_app.collect_daily_system_statuses = lambda: {
+            "API testing": "ok (24/24 passing)",
+            "Folder monitor": "ok",
+            "FTP transfer": "ok",
+        }
+
+        try:
+            fields = dashboard_app.build_daily_status_digest_fields()
+        finally:
+            dashboard_app.collect_daily_system_statuses = original_collect
+
+        self.assertEqual(fields["Alert"], "API Dashboard daily status")
+        self.assertEqual(fields["API testing"], "ok (24/24 passing)")
+        self.assertEqual(fields["Folder monitor"], "ok")
+        self.assertEqual(fields["FTP transfer"], "ok")
+        self.assertNotIn("url", fields)
+        self.assertNotIn("path", fields)
+        self.assertNotIn("file", fields)
+
+    def test_daily_status_schedule_is_weekdays_after_configured_time_once_per_day(self):
+        original_state_path = dashboard_app.DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH
+        original_send = dashboard_app.send_daily_status_digest
+        sent = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            dashboard_app.DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH = str(pathlib.Path(directory) / "daily_state.json")
+            dashboard_app.send_daily_status_digest = lambda: sent.append("sent") or True
+
+            try:
+                before_time = dashboard_app.maybe_send_scheduled_daily_status(datetime(2026, 8, 31, 7, 59, tzinfo=timezone.utc))
+                first = dashboard_app.maybe_send_scheduled_daily_status(datetime(2026, 8, 31, 8, 0, tzinfo=timezone.utc))
+                second = dashboard_app.maybe_send_scheduled_daily_status(datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc))
+                saturday = dashboard_app.maybe_send_scheduled_daily_status(datetime(2026, 9, 5, 9, 0, tzinfo=timezone.utc))
+            finally:
+                dashboard_app.DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH = original_state_path
+                dashboard_app.send_daily_status_digest = original_send
+
+        self.assertFalse(before_time)
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertFalse(saturday)
+        self.assertEqual(sent, ["sent"])
+
+    def test_zoom_daily_status_test_requires_operator_token(self):
+        original_operator_token = dashboard_app.AUTOMATION_OPERATOR_TOKEN
+        original_url = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL
+        original_token = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN
+        original_send = dashboard_app.send_zoom_fields_message
+        original_collect = dashboard_app.collect_daily_system_statuses
+        sent = []
+
+        dashboard_app.AUTOMATION_OPERATOR_TOKEN = "operator-token"
+        dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL = "https://zoom.example/webhook"
+        dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN = "test-token"
+        dashboard_app.collect_daily_system_statuses = lambda: {"API testing": "ok"}
+        dashboard_app.send_zoom_fields_message = lambda url, token, fields: sent.append(fields)
+
+        try:
+            client = dashboard_app.app.test_client()
+            unauthorized = client.post("/api/zoom_daily_status_test")
+            response = client.post(
+                "/api/zoom_daily_status_test",
+                headers={"X-Automation-Operator-Token": "operator-token"},
+            )
+        finally:
+            dashboard_app.AUTOMATION_OPERATOR_TOKEN = original_operator_token
+            dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL = original_url
+            dashboard_app.DASHBOARD_ZOOM_WEBHOOK_TOKEN = original_token
+            dashboard_app.send_zoom_fields_message = original_send
+            dashboard_app.collect_daily_system_statuses = original_collect
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "sent")
+        self.assertEqual(sent[0]["Alert"], "API Dashboard daily status")
 
 
 if __name__ == "__main__":
