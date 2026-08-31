@@ -277,6 +277,7 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"status": "HTTP 200"}))
         self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"status": "PASS", "statusCode": 200}))
         self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"ok": True, "status": "PASS"}))
+        self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"status": "PASS", "status_code": "200"}))
         self.assertEqual(
             dashboard_app.classify_stream_failure("api_testing", {"status": "HTTP 500"}),
             "api_non_200",
@@ -305,6 +306,80 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertIn("normalizedStatus === 'pass'", source)
         self.assertIn("statusCode === 200", source)
         self.assertIn("const statusColor = apiCheckOk ? 'text-green-600' : 'text-red-600';", source)
+
+    def test_work_status_tracks_ftp_email_and_success_evidence(self):
+        original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
+        original_reachability = dashboard_app.summarize_stream_reachability
+
+        dashboard_app.STREAM_OBSERVABILITY_STATE = {}
+        dashboard_app.summarize_stream_reachability = lambda url: "ok"
+        try:
+            dashboard_app.update_stream_observability(
+                "ftp_transfer",
+                {
+                    "status": "authenticated",
+                    "timestamp": dashboard_app.dashboard_utc_now(),
+                },
+            )
+            dashboard_app.update_stream_observability(
+                "ftp_transfer",
+                {
+                    "status": "script_ran",
+                    "message": "FTP automation completed",
+                    "timestamp": dashboard_app.dashboard_utc_now(),
+                    "email": {
+                        "subject": "Daily FTP report",
+                        "sender": "reports@example.com",
+                        "receivedDateTime": "2026-08-31T12:30:00Z",
+                    },
+                },
+            )
+
+            payload = dashboard_app.build_work_status_payload()["ftp_transfer"]
+        finally:
+            dashboard_app.STREAM_OBSERVABILITY_STATE = original_state
+            dashboard_app.summarize_stream_reachability = original_reachability
+
+        self.assertEqual(payload["service_status"], "ok")
+        self.assertEqual(payload["work_status"], "ok")
+        self.assertEqual(payload["latest_email"]["subject"], "Daily FTP report")
+        self.assertEqual(payload["latest_email"]["received_at"], "2026-08-31T12:30:00Z")
+
+    def test_folder_monitor_work_status_requires_success_evidence(self):
+        original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
+        original_fetch_text = dashboard_app.fetch_text_status_safely
+        original_fetch_json = dashboard_app.fetch_json
+
+        dashboard_app.STREAM_OBSERVABILITY_STATE = {}
+        dashboard_app.fetch_text_status_safely = lambda url: "pong"
+        dashboard_app.fetch_json = lambda url: {"status": "ok"}
+        try:
+            dashboard_app.update_stream_observability(
+                "folder_monitor",
+                {
+                    "status": "modified_file",
+                    "timestamp": dashboard_app.dashboard_utc_now(),
+                },
+            )
+            warning_payload = dashboard_app.build_work_status_payload()["folder_monitor"]
+
+            dashboard_app.update_stream_observability(
+                "folder_monitor",
+                {
+                    "status": "success",
+                    "message": "Folder automation completed",
+                    "timestamp": dashboard_app.dashboard_utc_now(),
+                },
+            )
+            ok_payload = dashboard_app.build_work_status_payload()["folder_monitor"]
+        finally:
+            dashboard_app.STREAM_OBSERVABILITY_STATE = original_state
+            dashboard_app.fetch_text_status_safely = original_fetch_text
+            dashboard_app.fetch_json = original_fetch_json
+
+        self.assertEqual(warning_payload["service_status"], "ok")
+        self.assertEqual(warning_payload["work_status"], "warning")
+        self.assertEqual(ok_payload["work_status"], "ok")
 
     def test_zoom_notification_uses_low_detail_payload_and_dedupes(self):
         original_url = dashboard_app.DASHBOARD_ZOOM_WEBHOOK_URL

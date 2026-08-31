@@ -128,8 +128,28 @@
         <h2 class="text-xl font-semibold text-blue-700 mb-4">👁 Watchdog Activity</h2>
 
         <div class="mb-4 space-y-3">
-          <p class="text-gray-500 text-sm">Last Heartbeat:</p>
-          <p id="watchdog-heartbeat" class="text-green-600 font-mono text-sm">Waiting...</p>
+          <div class="space-y-3 text-sm">
+            <div>
+              <p class="text-gray-500">Service:</p>
+              <p id="watchdog-service-status" class="font-mono text-gray-500">Waiting...</p>
+            </div>
+            <div>
+              <p class="text-gray-500">Work:</p>
+              <p id="watchdog-work-status" class="font-mono text-gray-500">Waiting...</p>
+            </div>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Last Heartbeat:</p>
+            <p id="watchdog-heartbeat" class="text-gray-500 font-mono text-sm">Waiting...</p>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Last Success:</p>
+            <p id="watchdog-last-success" class="text-gray-500 font-mono text-sm">Waiting...</p>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Last Error:</p>
+            <p id="watchdog-last-error" class="text-gray-500 font-mono text-sm">None observed</p>
+          </div>
           <div>
             <p class="text-gray-500 text-sm">Worker Health:</p>
             <p id="watchdog-worker-health" class="text-gray-500 font-mono text-sm">Waiting...</p>
@@ -146,9 +166,34 @@
       <div class="bg-white border border-gray-200 shadow-md rounded-xl p-5">
         <h2 class="text-xl font-semibold text-blue-700 mb-4">📤 FTP Automations</h2>
 
-        <div class="mb-4">
-          <p class="text-gray-500 text-sm">Last Authenticated:</p>
-          <p id="ftp-auth-time" class="text-green-600 font-mono text-sm">Waiting...</p>
+        <div class="mb-4 space-y-3">
+          <div class="space-y-3 text-sm">
+            <div>
+              <p class="text-gray-500">Service:</p>
+              <p id="ftp-service-status" class="font-mono text-gray-500">Waiting...</p>
+            </div>
+            <div>
+              <p class="text-gray-500">Work:</p>
+              <p id="ftp-work-status" class="font-mono text-gray-500">Waiting...</p>
+            </div>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Last Authenticated:</p>
+            <p id="ftp-auth-time" class="text-gray-500 font-mono text-sm">Waiting...</p>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Last Success:</p>
+            <p id="ftp-last-success" class="text-gray-500 font-mono text-sm">Waiting...</p>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Last Error:</p>
+            <p id="ftp-last-error" class="text-gray-500 font-mono text-sm">None observed</p>
+          </div>
+          <div>
+            <p class="text-gray-500 text-sm">Most Recent Email:</p>
+            <p id="ftp-latest-email" class="text-gray-700 font-mono text-sm break-words">Waiting...</p>
+            <p id="ftp-latest-email-received" class="text-xs text-gray-500 mt-1">Received: Unknown time</p>
+          </div>
         </div>
 
         <div class="space-y-2 text-sm max-h-[400px] overflow-y-auto" id="ftp-script-log">
@@ -235,6 +280,37 @@
       if (status === 'error') return 'bg-red-100 text-red-800';
       if (status === 'missing') return 'bg-gray-200 text-gray-800';
       return 'bg-gray-100 text-gray-700';
+    }
+
+    function textStatusClass(status) {
+      if (status === 'ok') return 'text-green-600';
+      if (status === 'warning') return 'text-yellow-600';
+      if (status === 'error') return 'text-red-600';
+      return 'text-gray-500';
+    }
+
+    function setStatusText(id, status, detail) {
+      const element = document.getElementById(id);
+      if (!element) return;
+      element.textContent = `${formatStatus(status || 'unknown')}${detail ? ` - ${detail}` : ''}`;
+      element.className = `${textStatusClass(status)} font-mono text-sm`;
+    }
+
+    function setTimestampText(id, value, status) {
+      const element = document.getElementById(id);
+      if (!element) return;
+      element.textContent = value ? formatTimestamp(value) : 'Unknown time';
+      element.className = `${textStatusClass(status)} font-mono text-sm`;
+    }
+
+    let workStatusRefreshTimer = null;
+
+    function scheduleWorkStatusRefresh() {
+      if (workStatusRefreshTimer) return;
+      workStatusRefreshTimer = setTimeout(() => {
+        workStatusRefreshTimer = null;
+        fetchWorkStatus();
+      }, 500);
     }
 
     async function fetchInsights() {
@@ -546,6 +622,53 @@
       }
     }
 
+    async function fetchWorkStatus() {
+      try {
+        const response = await fetch('/api/work_status');
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Unable to load work status.');
+        renderFolderMonitorStatus(result.folder_monitor || {});
+        renderFTPStatus(result.ftp_transfer || {});
+      } catch (error) {
+        setStatusText('watchdog-service-status', 'error', 'status unavailable');
+        setStatusText('watchdog-work-status', 'warning', 'no current dashboard snapshot');
+        setStatusText('ftp-service-status', 'error', 'status unavailable');
+        setStatusText('ftp-work-status', 'warning', 'no current dashboard snapshot');
+      }
+    }
+
+    function renderFolderMonitorStatus(status) {
+      setStatusText('watchdog-service-status', status.service_status, status.ping_ok && status.redis_ok ? 'ping and Redis ok' : status.ping_ok ? 'ping ok, Redis unknown' : 'ping unavailable');
+      setStatusText('watchdog-work-status', status.work_status, status.reason);
+      setTimestampText('watchdog-heartbeat', status.last_service_heartbeat_utc || status.last_worker_health_utc, status.service_status);
+      setTimestampText('watchdog-last-success', status.last_success_utc, status.work_status === 'ok' ? 'ok' : 'warning');
+      const errorEl = document.getElementById('watchdog-last-error');
+      const hasError = Boolean(status.last_error_utc);
+      errorEl.textContent = hasError
+        ? `${formatTimestamp(status.last_error_utc)} - ${status.last_error_message || 'Error observed'}`
+        : 'None observed';
+      errorEl.className = `${hasError ? 'text-red-600' : 'text-gray-500'} font-mono text-sm`;
+    }
+
+    function renderFTPStatus(status) {
+      setStatusText('ftp-service-status', status.service_status, status.authenticated === true ? 'mailbox authenticated' : status.authenticated === false ? 'auth failed' : 'stream checked');
+      setStatusText('ftp-work-status', status.work_status, status.reason);
+      setTimestampText('ftp-auth-time', status.last_auth_utc, status.authenticated === false ? 'error' : status.authenticated === true ? 'ok' : 'warning');
+      setTimestampText('ftp-last-success', status.last_success_utc, status.work_status === 'ok' ? 'ok' : 'warning');
+
+      const errorEl = document.getElementById('ftp-last-error');
+      const hasError = Boolean(status.last_error_utc);
+      errorEl.textContent = hasError
+        ? `${formatTimestamp(status.last_error_utc)} - ${status.last_error_message || 'Error observed'}`
+        : 'None observed';
+      errorEl.className = `${hasError ? 'text-red-600' : 'text-gray-500'} font-mono text-sm`;
+
+      const email = status.latest_email || {};
+      const emailText = [email.subject, email.sender ? `from ${email.sender}` : ''].filter(Boolean).join(' ');
+      document.getElementById('ftp-latest-email').textContent = emailText || 'No email observed yet';
+      document.getElementById('ftp-latest-email-received').textContent = `Received: ${email.received_at ? formatTimestamp(email.received_at) : 'Unknown time'}`;
+    }
+
     function renderAutomationRows(rows) {
       const body = document.getElementById('automation-summary-rows');
       body.innerHTML = '';
@@ -584,12 +707,14 @@
       fetchPerformanceData();
       fetchTrafficData();
       fetchAutomationSummary();
+      fetchWorkStatus();
     }
 
     // Set interval for automatic data refresh (every 10 minutes)
     setInterval(refreshData, 600000); 
     refreshData();
     fetchAPIUsageStats();
+    setInterval(fetchWorkStatus, 60000);
 
     function connectWatchdogStream(url, onData) {
       let source = new EventSource(url);
@@ -691,6 +816,7 @@
       if (data.status === 'monitoring_heartbeat' || data.status === 'monitoring_active') {
         heartbeat.textContent = formatTimestamp(data.timestamp);
         heartbeat.className = 'text-green-600 font-mono text-sm';
+        scheduleWorkStatusRefresh();
         return;
       }
 
@@ -711,7 +837,10 @@
         }
       }
 
-      if (data.status === 'new_file') return;
+      if (data.status === 'new_file') {
+        scheduleWorkStatusRefresh();
+        return;
+      }
       const entry = document.createElement('div');
       const color =
         data.status === 'success' || data.status === 'worker_health_ok' ? 'text-green-600' :
@@ -727,6 +856,7 @@
         </div>`;
       log.prepend(entry);
       while (log.childElementCount > 20) log.removeChild(log.lastChild);
+      scheduleWorkStatusRefresh();
     }
 
     function handleFTPEvent(data) {
@@ -735,17 +865,23 @@
       if (data.status === "authenticated" || data.status === "not_authenticated") {
         authEl.textContent = formatTimestamp(data.timestamp);
         authEl.className = data.status === "authenticated" ? "text-green-600 font-mono text-sm" : "text-red-600 font-mono text-sm";
+        scheduleWorkStatusRefresh();
         return;
       }
       const entry = document.createElement('div');
-      const color = data.status === "script_ran" ? "text-green-600" : "text-red-600";
+      const color =
+        ['script_ran', 'success', 'processed', 'transfer_complete', 'completed'].includes(data.status) ? 'text-green-600' :
+        ['connected', 'stream_connected'].includes(data.status) ? 'text-gray-500' :
+        'text-red-600';
+      const message = data.message || formatStatus(data.status);
       entry.innerHTML = `
         <div class="border-b border-gray-100 pb-2">
-          <p class="font-medium ${color}">${data.message}</p>
+          <p class="font-medium ${color}">${escapeHtml(message)}</p>
           <p class="text-xs text-gray-400">${formatTimestamp(data.timestamp)}</p>
         </div>`;
       log.prepend(entry);
       while (log.childElementCount > 20) log.removeChild(log.lastChild);
+      scheduleWorkStatusRefresh();
     }
 
     connectAPIHealthStream("/api-health/stream", handleAPIUpdate);

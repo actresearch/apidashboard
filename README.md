@@ -186,6 +186,19 @@ The dashboard also sends a weekday daily status digest at `DASHBOARD_ZOOM_DAILY_
 
 The daily digest writes its last-sent date to `DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH` so container restarts do not send duplicate same-day digests.
 
+### FTP and foldermonitor work insight
+
+The dashboard separates service reachability from actual work evidence:
+
+- `Service`: the upstream stream, ping, or Redis check is reachable.
+- `Work`: the dashboard has seen a recent completed work event.
+- `warning`: the service is reachable, but no completed work has been observed recently.
+- `error`: the latest work signal is a failure, authentication failed, or the service is unreachable.
+
+Set `WORK_STATUS_STALE_MINUTES` to control how long a successful FTP/foldermonitor work event remains green. The default is `120`.
+
+FTP can report the most recent email subject, sender, and received timestamp from streamed FTP events when those fields are present. If the FTP service exposes that data from a JSON endpoint, set `FTP_EMAIL_STATUS_URL` to that endpoint and the dashboard will read it for the FTP card. Zoom alerts and daily digests still use low-detail component summaries only.
+
 After deployment, send live test alerts from a trusted machine by posting to the fixed allow-list endpoint with the dashboard operator token:
 
 ```bash

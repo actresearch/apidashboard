@@ -54,7 +54,11 @@ DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH = os.getenv(
     "DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH",
     "/app/logs/zoom_daily_status_state.json",
 )
+WORK_STATUS_STALE_MINUTES = int(os.getenv("WORK_STATUS_STALE_MINUTES", "120"))
+FTP_EMAIL_STATUS_URL = os.getenv("FTP_EMAIL_STATUS_URL", "")
 ZOOM_NOTIFICATION_CACHE = {}
+STREAM_OBSERVABILITY_STATE = {}
+STREAM_OBSERVABILITY_LOCK = threading.Lock()
 DAILY_STATUS_THREAD_STARTED = False
 EXPECTED_AUTOMATIONS = [
     {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
@@ -206,6 +210,11 @@ def watchdog_stream():
 @app.route('/ftp/stream')
 def ftp_stream():
     return stream_proxy(FTP_STREAM_URL)
+
+
+@app.route('/api/work_status')
+def api_work_status():
+    return jsonify(build_work_status_payload())
 
 
 def stream_proxy(upstream_url):
@@ -685,6 +694,7 @@ def inspect_stream_line(upstream_url, event_name, line):
     if not isinstance(payload, dict):
         return
 
+    update_stream_observability(component, payload)
     reason = classify_stream_failure(component, payload)
     if reason:
         notify_dashboard_failure(reason, component)
@@ -694,7 +704,12 @@ def classify_stream_failure(component, payload):
     status = str(payload.get("status") or "").lower()
 
     if component == "api_testing":
-        if payload.get("ok") is True or payload.get("statusCode") == 200 or status in {"pass", "http 200"}:
+        status_code = payload.get("statusCode") or payload.get("status_code") or payload.get("httpStatus") or payload.get("http_status")
+        try:
+            status_code = int(status_code)
+        except (TypeError, ValueError):
+            status_code = None
+        if payload.get("ok") is True or status_code == 200 or status in {"pass", "ok", "http 200"}:
             return None
         return "api_non_200"
 
@@ -715,6 +730,243 @@ def stream_component_name(upstream_url):
     if upstream_url == FTP_STREAM_URL:
         return "ftp_transfer"
     return "stream"
+
+
+def update_stream_observability(component, payload):
+    if component not in {"folder_monitor", "ftp_transfer"}:
+        return
+
+    now = dashboard_utc_now()
+    timestamp = normalize_event_timestamp(payload.get("timestamp") or payload.get("time") or payload.get("created_at")) or now
+    status = str(payload.get("status") or "").lower()
+    event = {
+        "status": status or "event",
+        "message": sanitized_event_message(payload),
+        "timestamp": timestamp,
+    }
+
+    with STREAM_OBSERVABILITY_LOCK:
+        state = STREAM_OBSERVABILITY_STATE.setdefault(component, {"recent_events": []})
+        state["last_event_utc"] = timestamp
+        state["recent_events"].insert(0, event)
+        state["recent_events"] = state["recent_events"][:25]
+
+        if component == "folder_monitor":
+            update_folder_monitor_state(state, status, payload, timestamp)
+        elif component == "ftp_transfer":
+            update_ftp_state(state, status, payload, timestamp)
+
+
+def update_folder_monitor_state(state, status, payload, timestamp):
+    if status in {"monitoring_heartbeat", "monitoring_active", "stream_connected"}:
+        state["last_service_heartbeat_utc"] = timestamp
+    if status in {"new_file", "modified_file", "ignored", "success", "processed", "uploaded"}:
+        state["last_activity_utc"] = timestamp
+    if status in {"success", "processed", "uploaded"}:
+        state["last_success_utc"] = timestamp
+        state["last_success_message"] = sanitized_event_message(payload)
+    if status in {"worker_health_failed", "error", "failed", "failure"}:
+        state["last_error_utc"] = timestamp
+        state["last_error_message"] = sanitized_event_message(payload)
+    if status == "worker_health_ok":
+        state["last_worker_health_utc"] = timestamp
+        state["worker_health"] = "ok"
+    elif status == "worker_health_failed":
+        state["last_worker_health_utc"] = timestamp
+        state["worker_health"] = "error"
+
+
+def update_ftp_state(state, status, payload, timestamp):
+    if status in {"connected", "stream_connected"}:
+        state["last_service_heartbeat_utc"] = timestamp
+    if status in {"authenticated", "not_authenticated"}:
+        state["last_auth_utc"] = timestamp
+        state["authenticated"] = status == "authenticated"
+    if status in {"script_ran", "success", "processed", "transfer_complete", "completed"}:
+        state["last_success_utc"] = timestamp
+        state["last_success_message"] = sanitized_event_message(payload)
+    if status in {"not_authenticated", "script_failed", "error", "failed", "failure", "transfer_failed"}:
+        state["last_error_utc"] = timestamp
+        state["last_error_message"] = sanitized_event_message(payload)
+
+    latest_email = extract_ftp_email(payload)
+    if latest_email:
+        state["latest_email"] = latest_email
+
+
+def build_work_status_payload():
+    with STREAM_OBSERVABILITY_LOCK:
+        state = json.loads(json.dumps(STREAM_OBSERVABILITY_STATE))
+
+    ftp_probe = fetch_optional_json(FTP_EMAIL_STATUS_URL) if FTP_EMAIL_STATUS_URL else None
+    if isinstance(ftp_probe, dict):
+        latest_email = extract_ftp_email(ftp_probe)
+        if latest_email:
+            state.setdefault("ftp_transfer", {})["latest_email"] = latest_email
+
+    generated_at = dashboard_utc_now()
+    return {
+        "generated_at_utc": generated_at,
+        "stale_after_minutes": WORK_STATUS_STALE_MINUTES,
+        "folder_monitor": build_folder_monitor_observability(state.get("folder_monitor", {}), generated_at),
+        "ftp_transfer": build_ftp_observability(state.get("ftp_transfer", {}), generated_at),
+    }
+
+
+def build_folder_monitor_observability(state, generated_at):
+    ping_ok = fetch_text_status_safely(replace_stream_path(WATCHDOG_STREAM_URL, "ping")) == "pong"
+    redis_ok = False
+    try:
+        redis_ok = fetch_json(replace_stream_path(WATCHDOG_STREAM_URL, "redis-ping")).get("status") == "ok"
+    except Exception:
+        redis_ok = False
+
+    service_status = "ok" if ping_ok and redis_ok else "warning" if ping_ok else "error"
+    work_status, work_reason = classify_work_freshness(state, generated_at)
+    if state.get("worker_health") == "error":
+        work_status = "error"
+        work_reason = "Worker self-test failed."
+
+    return {
+        "service_status": service_status,
+        "work_status": work_status,
+        "reason": work_reason,
+        "ping_ok": ping_ok,
+        "redis_ok": redis_ok,
+        "last_service_heartbeat_utc": state.get("last_service_heartbeat_utc"),
+        "last_worker_health_utc": state.get("last_worker_health_utc"),
+        "last_activity_utc": state.get("last_activity_utc"),
+        "last_success_utc": state.get("last_success_utc"),
+        "last_success_message": state.get("last_success_message"),
+        "last_error_utc": state.get("last_error_utc"),
+        "last_error_message": state.get("last_error_message"),
+        "recent_events": state.get("recent_events", [])[:25],
+    }
+
+
+def build_ftp_observability(state, generated_at):
+    service_status = "ok" if summarize_stream_reachability(FTP_STREAM_URL) == "ok" else "error"
+    work_status, work_reason = classify_work_freshness(state, generated_at)
+    if state.get("authenticated") is False:
+        work_status = "error"
+        work_reason = "FTP mailbox authentication failed."
+
+    return {
+        "service_status": service_status,
+        "work_status": work_status,
+        "reason": work_reason,
+        "authenticated": state.get("authenticated"),
+        "last_auth_utc": state.get("last_auth_utc"),
+        "last_service_heartbeat_utc": state.get("last_service_heartbeat_utc"),
+        "last_success_utc": state.get("last_success_utc"),
+        "last_success_message": state.get("last_success_message"),
+        "last_error_utc": state.get("last_error_utc"),
+        "last_error_message": state.get("last_error_message"),
+        "latest_email": state.get("latest_email") or {},
+        "recent_events": state.get("recent_events", [])[:25],
+    }
+
+
+def classify_work_freshness(state, generated_at):
+    last_success = parse_timestamp(state.get("last_success_utc"))
+    last_error = parse_timestamp(state.get("last_error_utc"))
+    now = parse_timestamp(generated_at)
+
+    if last_error and (not last_success or last_error >= last_success):
+        return "error", "Most recent work signal is an error."
+    if not last_success:
+        return "warning", "No completed work observed yet."
+    if now and now.timestamp() - last_success.timestamp() > WORK_STATUS_STALE_MINUTES * 60:
+        return "warning", f"No completed work in the last {WORK_STATUS_STALE_MINUTES} minutes."
+    return "ok", "Recent completed work observed."
+
+
+def extract_ftp_email(payload):
+    email = first_dict(payload, ("email", "latest_email", "last_email", "message_email")) or payload
+    subject = first_value(email, ("subject", "email_subject", "latest_email_subject", "message_subject"))
+    received_at = first_value(
+        email,
+        ("received_at", "received_timestamp", "receivedDateTime", "received_datetime", "email_received_at"),
+    )
+    sender = first_value(email, ("from", "sender", "sender_email", "from_address", "email_from"))
+
+    if not any([subject, received_at, sender]):
+        return None
+
+    return {
+        "subject": str(subject) if subject else "",
+        "sender": str(sender) if sender else "",
+        "received_at": normalize_event_timestamp(received_at) or str(received_at or ""),
+    }
+
+
+def sanitized_event_message(payload):
+    message = first_value(payload, ("message", "reason", "status", "event"))
+    if isinstance(message, str) and message:
+        return truncate_text(message.replace("\n", " "), 180)
+    errors = payload.get("errors")
+    if isinstance(errors, list) and errors:
+        return truncate_text(" | ".join(str(item) for item in errors[:3]).replace("\n", " "), 180)
+    return str(payload.get("status") or "event")
+
+
+def first_dict(payload, keys):
+    for key in keys:
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def first_value(payload, keys):
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def truncate_text(value, max_chars):
+    value = str(value)
+    return value if len(value) <= max_chars else value[: max_chars - 1] + "..."
+
+
+def normalize_event_timestamp(value):
+    parsed = parse_timestamp(value)
+    if not parsed:
+        return None
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return None
+
+
+def fetch_optional_json(url):
+    try:
+        return fetch_json(url)
+    except Exception:
+        return None
+
+
+def fetch_text_status_safely(url):
+    try:
+        return fetch_text_status(url)
+    except Exception:
+        return ""
 
 
 def notify_for_automation_payload(payload, source):
@@ -804,7 +1056,7 @@ def collect_daily_system_statuses():
     return {
         "API testing": summarize_api_testing_status(),
         "Folder monitor": summarize_folder_monitor_status(),
-        "FTP transfer": summarize_stream_reachability(FTP_STREAM_URL),
+        "FTP transfer": summarize_ftp_transfer_status(),
         "Usage stats": summarize_usage_stats_status(),
         "Automations": summarize_automation_status(),
         "Port data": summarize_port_data_status(),
@@ -828,18 +1080,8 @@ def summarize_api_testing_status():
 
 
 def summarize_folder_monitor_status():
-    ping_ok = fetch_text_status(replace_stream_path(WATCHDOG_STREAM_URL, "ping")) == "pong"
-    redis_ok = False
-    try:
-        redis_payload = fetch_json(replace_stream_path(WATCHDOG_STREAM_URL, "redis-ping"))
-        redis_ok = redis_payload.get("status") == "ok"
-    except Exception:
-        redis_ok = False
-    if ping_ok and redis_ok:
-        return "ok"
-    if ping_ok:
-        return "warning"
-    return "unavailable"
+    payload = build_work_status_payload().get("folder_monitor", {})
+    return format_component_digest_status(payload)
 
 
 def summarize_stream_reachability(stream_url):
@@ -883,6 +1125,18 @@ def summarize_port_data_status():
         return f"ok {counts.get('ok', 0)}, warning {counts.get('warning', 0)}, error {counts.get('error', 0)}"
     except Exception:
         return "unavailable"
+
+
+def summarize_ftp_transfer_status():
+    payload = build_work_status_payload().get("ftp_transfer", {})
+    return format_component_digest_status(payload)
+
+
+def format_component_digest_status(payload):
+    service_status = payload.get("service_status") or "unknown"
+    work_status = payload.get("work_status") or "unknown"
+    reason = payload.get("reason") or ""
+    return f"service {service_status}, work {work_status}" + (f" ({reason})" if reason else "")
 
 
 def fetch_json(url):
