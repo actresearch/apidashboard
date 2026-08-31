@@ -274,8 +274,14 @@ class UsageStatsSnapshotTests(unittest.TestCase):
 
     def test_stream_failure_classification_by_component(self):
         self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"status": "HTTP 200"}))
+        self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"status": "PASS", "statusCode": 200}))
+        self.assertIsNone(dashboard_app.classify_stream_failure("api_testing", {"ok": True, "status": "PASS"}))
         self.assertEqual(
             dashboard_app.classify_stream_failure("api_testing", {"status": "HTTP 500"}),
+            "api_non_200",
+        )
+        self.assertEqual(
+            dashboard_app.classify_stream_failure("api_testing", {"status": "FAIL", "statusCode": 404}),
             "api_non_200",
         )
         self.assertEqual(

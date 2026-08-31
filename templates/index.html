@@ -656,11 +656,15 @@
       if (data.type === 'api_check') {
         const log = document.getElementById('api-health-log');
         const entry = document.createElement('div');
-        const statusColor = data.status === 'HTTP 200' ? 'text-green-600' : 'text-red-600';
+        const apiCheckOk = data.ok === true || data.statusCode === 200 || data.status === 'HTTP 200' || data.status === 'PASS';
+        const statusColor = apiCheckOk ? 'text-green-600' : 'text-red-600';
+        const statusText = data.statusCode
+          ? `${data.status || (apiCheckOk ? 'PASS' : 'FAIL')} (HTTP ${data.statusCode})`
+          : data.status;
         entry.innerHTML = `
           <div class="border-b border-gray-100 pb-2">
             <p class="font-medium">${data.endpoint}</p>
-            <p class="${statusColor}">${data.status}</p>
+            <p class="${statusColor}">${statusText}</p>
             <p class="text-xs text-gray-400">${formatTimestamp(data.timestamp)}</p>
           </div>`;
         log.prepend(entry);

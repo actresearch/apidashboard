@@ -163,7 +163,7 @@ DASHBOARD_ZOOM_DEDUPE_SECONDS=1800
 
 Initial failure rules:
 
-- `api_testing`: any streamed endpoint status other than `HTTP 200`.
+- `api_testing`: any streamed endpoint without `ok: true`, `statusCode: 200`, `PASS`, or legacy `HTTP 200`.
 - `folder_monitor`: `worker_health_failed`, `error`, `failed`, or `failure`.
 - `ftp_transfer`: `not_authenticated`, `script_failed`, `error`, `failed`, or `failure`.
 - `usage_stats`: missing Supabase config or failure loading the daily usage snapshot.

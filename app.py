@@ -663,7 +663,9 @@ def classify_stream_failure(component, payload):
     status = str(payload.get("status") or "").lower()
 
     if component == "api_testing":
-        return None if payload.get("status") == "HTTP 200" else "api_non_200"
+        if payload.get("ok") is True or payload.get("statusCode") == 200 or status in {"pass", "http 200"}:
+            return None
+        return "api_non_200"
 
     if component == "folder_monitor" and status in {"worker_health_failed", "error", "failed", "failure"}:
         return "folder_monitor_failure"
