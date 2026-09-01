@@ -295,6 +295,10 @@ class UsageStatsSnapshotTests(unittest.TestCase):
             dashboard_app.classify_stream_failure("ftp_transfer", {"status": "not_authenticated"}),
             "ftp_failure",
         )
+        self.assertEqual(
+            dashboard_app.classify_stream_failure("ftp_transfer", {"status": "script_timeout"}),
+            "ftp_failure",
+        )
         self.assertIsNone(dashboard_app.classify_stream_failure("ftp_transfer", {"status": "script_ran"}))
 
     def test_api_health_template_colors_pass_and_fail_statuses(self):
@@ -324,8 +328,8 @@ class UsageStatsSnapshotTests(unittest.TestCase):
             dashboard_app.update_stream_observability(
                 "ftp_transfer",
                 {
-                    "status": "script_ran",
-                    "message": "FTP automation completed",
+                    "status": "poll_completed",
+                    "message": "Mailbox poll completed",
                     "timestamp": dashboard_app.dashboard_utc_now(),
                     "email": {
                         "subject": "Daily FTP report",

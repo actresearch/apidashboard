@@ -197,7 +197,9 @@ The dashboard separates service reachability from actual work evidence:
 
 Set `WORK_STATUS_STALE_MINUTES` to control how long a successful FTP/foldermonitor work event remains green. The default is `120`.
 
-FTP can report the most recent email subject, sender, and received timestamp from streamed FTP events when those fields are present. If the FTP service exposes that data from a JSON endpoint, set `FTP_EMAIL_STATUS_URL` to that endpoint and the dashboard will read it for the FTP card. Zoom alerts and daily digests still use low-detail component summaries only.
+FTP can report the most recent email subject, sender, and received timestamp from streamed FTP events when those fields are present. If the FTP service exposes that data from a JSON endpoint, set `FTP_EMAIL_STATUS_URL` and `FTP_EMAIL_STATUS_TOKEN`; the dashboard sends the token as `X-FTP-Status-Token`. Zoom alerts and daily digests still use low-detail component summaries only.
+
+Set `STREAM_PROXY_ALERT_AFTER_FAILURES` to control how many consecutive dashboard stream proxy failures are required before a Zoom failure alert is sent. The default is `3`, which avoids alerting on one quiet or recycled SSE connection.
 
 After deployment, send live test alerts from a trusted machine by posting to the fixed allow-list endpoint with the dashboard operator token:
 

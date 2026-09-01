@@ -56,9 +56,12 @@ DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH = os.getenv(
 )
 WORK_STATUS_STALE_MINUTES = int(os.getenv("WORK_STATUS_STALE_MINUTES", "120"))
 FTP_EMAIL_STATUS_URL = os.getenv("FTP_EMAIL_STATUS_URL", "")
+FTP_EMAIL_STATUS_TOKEN = os.getenv("FTP_EMAIL_STATUS_TOKEN", "")
+STREAM_PROXY_ALERT_AFTER_FAILURES = int(os.getenv("STREAM_PROXY_ALERT_AFTER_FAILURES", "3"))
 ZOOM_NOTIFICATION_CACHE = {}
 STREAM_OBSERVABILITY_STATE = {}
 STREAM_OBSERVABILITY_LOCK = threading.Lock()
+STREAM_PROXY_FAILURES = {}
 DAILY_STATUS_THREAD_STARTED = False
 EXPECTED_AUTOMATIONS = [
     {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
@@ -222,6 +225,7 @@ def stream_proxy(upstream_url):
         while True:
             try:
                 with urllib.request.urlopen(upstream_url, timeout=70) as upstream:
+                    STREAM_PROXY_FAILURES[stream_component_name(upstream_url)] = 0
                     event_name = "message"
                     for line in upstream:
                         inspect_stream_line(upstream_url, event_name, line)
@@ -232,7 +236,11 @@ def stream_proxy(upstream_url):
                         yield line
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 message = str(e).replace("\n", " ")
-                notify_dashboard_failure("stream_proxy", stream_component_name(upstream_url))
+                component = stream_component_name(upstream_url)
+                failures = STREAM_PROXY_FAILURES.get(component, 0) + 1
+                STREAM_PROXY_FAILURES[component] = failures
+                if failures >= STREAM_PROXY_ALERT_AFTER_FAILURES:
+                    notify_dashboard_failure("stream_proxy", component)
                 yield f"event: error\ndata: {message}\n\n".encode("utf-8")
 
     return Response(
@@ -716,7 +724,7 @@ def classify_stream_failure(component, payload):
     if component == "folder_monitor" and status in {"worker_health_failed", "error", "failed", "failure"}:
         return "folder_monitor_failure"
 
-    if component == "ftp_transfer" and status in {"not_authenticated", "script_failed", "error", "failed", "failure"}:
+    if component == "ftp_transfer" and status in {"not_authenticated", "script_failed", "script_timeout", "transfer_failed", "error", "failed", "failure"}:
         return "ftp_failure"
 
     return None
@@ -782,7 +790,16 @@ def update_ftp_state(state, status, payload, timestamp):
     if status in {"authenticated", "not_authenticated"}:
         state["last_auth_utc"] = timestamp
         state["authenticated"] = status == "authenticated"
-    if status in {"script_ran", "success", "processed", "transfer_complete", "completed"}:
+    if status in {
+        "script_ran",
+        "success",
+        "processed",
+        "transfer_complete",
+        "transfer_success",
+        "completed",
+        "poll_completed",
+        "no_matching_messages",
+    }:
         state["last_success_utc"] = timestamp
         state["last_success_message"] = sanitized_event_message(payload)
     if status in {"not_authenticated", "script_failed", "error", "failed", "failure", "transfer_failed"}:
@@ -798,11 +815,14 @@ def build_work_status_payload():
     with STREAM_OBSERVABILITY_LOCK:
         state = json.loads(json.dumps(STREAM_OBSERVABILITY_STATE))
 
-    ftp_probe = fetch_optional_json(FTP_EMAIL_STATUS_URL) if FTP_EMAIL_STATUS_URL else None
+    ftp_probe = fetch_optional_json(FTP_EMAIL_STATUS_URL, FTP_EMAIL_STATUS_TOKEN) if FTP_EMAIL_STATUS_URL else None
     if isinstance(ftp_probe, dict):
         latest_email = extract_ftp_email(ftp_probe)
         if latest_email:
             state.setdefault("ftp_transfer", {})["latest_email"] = latest_email
+        if ftp_probe.get("last_poll_completed"):
+            state.setdefault("ftp_transfer", {})["last_success_utc"] = normalize_event_timestamp(ftp_probe.get("last_poll_completed"))
+            state.setdefault("ftp_transfer", {})["last_success_message"] = ftp_probe.get("last_poll_message") or "Mailbox poll completed"
 
     generated_at = dashboard_utc_now()
     return {
@@ -955,11 +975,20 @@ def parse_timestamp(value):
         return None
 
 
-def fetch_optional_json(url):
+def fetch_optional_json(url, token=""):
     try:
-        return fetch_json(url)
+        return fetch_json_with_token(url, token)
     except Exception:
         return None
+
+
+def fetch_json_with_token(url, token=""):
+    headers = {"Accept": "application/json", "User-Agent": "ACT-API-Dashboard/1.0"}
+    if token:
+        headers["X-FTP-Status-Token"] = token
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def fetch_text_status_safely(url):
