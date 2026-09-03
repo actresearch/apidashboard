@@ -349,6 +349,66 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertEqual(payload["latest_email"]["subject"], "Daily FTP report")
         self.assertEqual(payload["latest_email"]["received_at"], "2026-08-31T12:30:00Z")
 
+    def test_ftp_transfer_error_is_not_masked_by_later_poll_completion(self):
+        original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
+        original_reachability = dashboard_app.summarize_stream_reachability
+
+        dashboard_app.STREAM_OBSERVABILITY_STATE = {}
+        dashboard_app.summarize_stream_reachability = lambda url: "ok"
+        try:
+            dashboard_app.update_stream_observability(
+                "ftp_transfer",
+                {"status": "authenticated", "timestamp": "2026-09-03T12:00:00Z"},
+            )
+            dashboard_app.update_stream_observability(
+                "ftp_transfer",
+                {"status": "script_failed", "message": "Transfer failed", "timestamp": "2026-09-03T12:01:00Z"},
+            )
+            dashboard_app.update_stream_observability(
+                "ftp_transfer",
+                {"status": "poll_completed", "message": "Mailbox poll completed", "timestamp": "2026-09-03T12:02:00Z"},
+            )
+
+            payload = dashboard_app.build_work_status_payload()["ftp_transfer"]
+        finally:
+            dashboard_app.STREAM_OBSERVABILITY_STATE = original_state
+            dashboard_app.summarize_stream_reachability = original_reachability
+
+        self.assertEqual(payload["work_status"], "error")
+        self.assertEqual(payload["reason"], "Most recent transfer signal is an error.")
+
+    def test_ftp_status_monitor_alerts_on_reported_transfer_failure(self):
+        original_url = dashboard_app.FTP_EMAIL_STATUS_URL
+        original_fetch = dashboard_app.fetch_json_with_token
+        original_notify = dashboard_app.notify_dashboard_failure
+        original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
+        original_failures = dashboard_app.FTP_STATUS_MONITOR_FAILURES
+        alerts = []
+
+        dashboard_app.FTP_EMAIL_STATUS_URL = "http://ftptransfer:5000/status"
+        dashboard_app.fetch_json_with_token = lambda url, token: {
+            "authenticated": True,
+            "timestamp": "2026-09-03T12:00:00Z",
+            "last_transfer_error": {
+                "status": "script_timeout",
+                "message": "Transfer timed out",
+                "timestamp": "2026-09-03T12:00:00Z",
+            },
+        }
+        dashboard_app.notify_dashboard_failure = lambda reason, component, force=False: alerts.append((reason, component))
+        dashboard_app.STREAM_OBSERVABILITY_STATE = {}
+        dashboard_app.FTP_STATUS_MONITOR_FAILURES = 0
+        try:
+            dashboard_app.monitor_ftp_status_once()
+        finally:
+            dashboard_app.FTP_EMAIL_STATUS_URL = original_url
+            dashboard_app.fetch_json_with_token = original_fetch
+            dashboard_app.notify_dashboard_failure = original_notify
+            dashboard_app.STREAM_OBSERVABILITY_STATE = original_state
+            dashboard_app.FTP_STATUS_MONITOR_FAILURES = original_failures
+
+        self.assertIn(("ftp_failure", "ftp_transfer"), alerts)
+
     def test_folder_monitor_work_status_requires_success_evidence(self):
         original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
         original_fetch_text = dashboard_app.fetch_text_status_safely

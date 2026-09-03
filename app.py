@@ -57,12 +57,15 @@ DASHBOARD_ZOOM_DAILY_STATUS_STATE_PATH = os.getenv(
 WORK_STATUS_STALE_MINUTES = int(os.getenv("WORK_STATUS_STALE_MINUTES", "120"))
 FTP_EMAIL_STATUS_URL = os.getenv("FTP_EMAIL_STATUS_URL", "")
 FTP_EMAIL_STATUS_TOKEN = os.getenv("FTP_EMAIL_STATUS_TOKEN", "")
+FTP_STATUS_MONITOR_INTERVAL = max(30, int(os.getenv("FTP_STATUS_MONITOR_INTERVAL", "60")))
 STREAM_PROXY_ALERT_AFTER_FAILURES = int(os.getenv("STREAM_PROXY_ALERT_AFTER_FAILURES", "3"))
 ZOOM_NOTIFICATION_CACHE = {}
 STREAM_OBSERVABILITY_STATE = {}
 STREAM_OBSERVABILITY_LOCK = threading.Lock()
 STREAM_PROXY_FAILURES = {}
 DAILY_STATUS_THREAD_STARTED = False
+FTP_STATUS_MONITOR_THREAD_STARTED = False
+FTP_STATUS_MONITOR_FAILURES = 0
 EXPECTED_AUTOMATIONS = [
     {"automation_id": "port_data_monitor", "automation": "Major Port Data Monitor", "cadence": "daily", "detail_url": "/ports"},
     {"automation_id": "aar_weekly_rail", "automation": "AAR Weekly Rail Feed", "cadence": "weekly"},
@@ -702,6 +705,10 @@ def inspect_stream_line(upstream_url, event_name, line):
     if not isinstance(payload, dict):
         return
 
+    process_component_payload(component, payload)
+
+
+def process_component_payload(component, payload):
     update_stream_observability(component, payload)
     reason = classify_stream_failure(component, payload)
     if reason:
@@ -785,11 +792,16 @@ def update_folder_monitor_state(state, status, payload, timestamp):
 
 
 def update_ftp_state(state, status, payload, timestamp):
-    if status in {"connected", "stream_connected"}:
+    if status in {"connected", "stream_connected", "stream_heartbeat"}:
         state["last_service_heartbeat_utc"] = timestamp
     if status in {"authenticated", "not_authenticated"}:
         state["last_auth_utc"] = timestamp
         state["authenticated"] = status == "authenticated"
+    if status in {"poll_completed", "no_matching_messages"}:
+        state["last_poll_utc"] = timestamp
+        state["last_poll_message"] = sanitized_event_message(payload)
+        state["last_success_utc"] = timestamp
+        state["last_success_message"] = sanitized_event_message(payload)
     if status in {
         "script_ran",
         "success",
@@ -797,12 +809,11 @@ def update_ftp_state(state, status, payload, timestamp):
         "transfer_complete",
         "transfer_success",
         "completed",
-        "poll_completed",
-        "no_matching_messages",
     }:
+        state["last_transfer_success_utc"] = timestamp
         state["last_success_utc"] = timestamp
         state["last_success_message"] = sanitized_event_message(payload)
-    if status in {"not_authenticated", "script_failed", "error", "failed", "failure", "transfer_failed"}:
+    if status in {"not_authenticated", "script_failed", "script_timeout", "error", "failed", "failure", "transfer_failed"}:
         state["last_error_utc"] = timestamp
         state["last_error_message"] = sanitized_event_message(payload)
 
@@ -811,18 +822,46 @@ def update_ftp_state(state, status, payload, timestamp):
         state["latest_email"] = latest_email
 
 
+def merge_ftp_status_probe(state, probe):
+    if not isinstance(probe, dict):
+        return
+
+    ftp_state = state.setdefault("ftp_transfer", {})
+    observed_at = normalize_event_timestamp(probe.get("timestamp")) or dashboard_utc_now()
+    if isinstance(probe.get("authenticated"), bool):
+        ftp_state["authenticated"] = probe["authenticated"]
+        ftp_state["last_auth_utc"] = observed_at
+
+    latest_email = extract_ftp_email(probe)
+    if latest_email:
+        ftp_state["latest_email"] = latest_email
+
+    poll_completed = normalize_event_timestamp(probe.get("last_poll_completed") or probe.get("last_poll_success"))
+    if poll_completed:
+        ftp_state["last_poll_utc"] = poll_completed
+        ftp_state["last_poll_message"] = probe.get("last_poll_message") or "Mailbox poll completed"
+        ftp_state["last_success_utc"] = poll_completed
+        ftp_state["last_success_message"] = ftp_state["last_poll_message"]
+
+    transfer_success = normalize_event_timestamp(probe.get("last_transfer_success"))
+    if transfer_success:
+        ftp_state["last_transfer_success_utc"] = transfer_success
+        if not poll_completed or parse_timestamp(transfer_success) >= parse_timestamp(poll_completed):
+            ftp_state["last_success_utc"] = transfer_success
+
+    transfer_error = probe.get("last_transfer_error")
+    if isinstance(transfer_error, dict):
+        error_timestamp = normalize_event_timestamp(transfer_error.get("timestamp")) or observed_at
+        ftp_state["last_error_utc"] = error_timestamp
+        ftp_state["last_error_message"] = sanitized_event_message(transfer_error)
+
+
 def build_work_status_payload():
     with STREAM_OBSERVABILITY_LOCK:
         state = json.loads(json.dumps(STREAM_OBSERVABILITY_STATE))
 
     ftp_probe = fetch_optional_json(FTP_EMAIL_STATUS_URL, FTP_EMAIL_STATUS_TOKEN) if FTP_EMAIL_STATUS_URL else None
-    if isinstance(ftp_probe, dict):
-        latest_email = extract_ftp_email(ftp_probe)
-        if latest_email:
-            state.setdefault("ftp_transfer", {})["latest_email"] = latest_email
-        if ftp_probe.get("last_poll_completed"):
-            state.setdefault("ftp_transfer", {})["last_success_utc"] = normalize_event_timestamp(ftp_probe.get("last_poll_completed"))
-            state.setdefault("ftp_transfer", {})["last_success_message"] = ftp_probe.get("last_poll_message") or "Mailbox poll completed"
+    merge_ftp_status_probe(state, ftp_probe)
 
     generated_at = dashboard_utc_now()
     return {
@@ -866,10 +905,16 @@ def build_folder_monitor_observability(state, generated_at):
 
 def build_ftp_observability(state, generated_at):
     service_status = "ok" if summarize_stream_reachability(FTP_STREAM_URL) == "ok" else "error"
-    work_status, work_reason = classify_work_freshness(state, generated_at)
+    last_error = parse_timestamp(state.get("last_error_utc"))
+    last_transfer_success = parse_timestamp(state.get("last_transfer_success_utc"))
     if state.get("authenticated") is False:
         work_status = "error"
         work_reason = "FTP mailbox authentication failed."
+    elif last_error and (not last_transfer_success or last_error >= last_transfer_success):
+        work_status = "error"
+        work_reason = "Most recent transfer signal is an error."
+    else:
+        work_status, work_reason = classify_work_freshness(state, generated_at)
 
     return {
         "service_status": service_status,
@@ -878,6 +923,8 @@ def build_ftp_observability(state, generated_at):
         "authenticated": state.get("authenticated"),
         "last_auth_utc": state.get("last_auth_utc"),
         "last_service_heartbeat_utc": state.get("last_service_heartbeat_utc"),
+        "last_poll_utc": state.get("last_poll_utc"),
+        "last_transfer_success_utc": state.get("last_transfer_success_utc"),
         "last_success_utc": state.get("last_success_utc"),
         "last_success_message": state.get("last_success_message"),
         "last_error_utc": state.get("last_error_utc"),
@@ -989,6 +1036,57 @@ def fetch_json_with_token(url, token=""):
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def monitor_ftp_status_once():
+    global FTP_STATUS_MONITOR_FAILURES
+    if not FTP_EMAIL_STATUS_URL:
+        return None
+
+    try:
+        probe = fetch_json_with_token(FTP_EMAIL_STATUS_URL, FTP_EMAIL_STATUS_TOKEN)
+    except Exception:
+        FTP_STATUS_MONITOR_FAILURES += 1
+        if FTP_STATUS_MONITOR_FAILURES >= STREAM_PROXY_ALERT_AFTER_FAILURES:
+            notify_dashboard_failure("ftp_status_probe", "ftp_transfer")
+        return None
+
+    FTP_STATUS_MONITOR_FAILURES = 0
+    if not isinstance(probe, dict):
+        return None
+
+    observed_at = normalize_event_timestamp(probe.get("timestamp")) or dashboard_utc_now()
+    authenticated = probe.get("authenticated")
+    if isinstance(authenticated, bool):
+        process_component_payload("ftp_transfer", {
+            "status": "authenticated" if authenticated else "not_authenticated",
+            "timestamp": observed_at,
+        })
+
+    poll_completed = normalize_event_timestamp(probe.get("last_poll_completed") or probe.get("last_poll_success"))
+    if poll_completed:
+        process_component_payload("ftp_transfer", {
+            "status": "poll_completed",
+            "message": probe.get("last_poll_message") or "Mailbox poll completed",
+            "timestamp": poll_completed,
+        })
+
+    transfer_success = normalize_event_timestamp(probe.get("last_transfer_success"))
+    if transfer_success:
+        process_component_payload("ftp_transfer", {
+            "status": "transfer_success",
+            "message": "Transfer completed",
+            "timestamp": transfer_success,
+        })
+
+    transfer_error = probe.get("last_transfer_error")
+    if isinstance(transfer_error, dict):
+        process_component_payload("ftp_transfer", {
+            "status": transfer_error.get("status") or "error",
+            "message": transfer_error.get("message") or "FTP transfer failed",
+            "timestamp": normalize_event_timestamp(transfer_error.get("timestamp")) or observed_at,
+        })
+    return probe
 
 
 def fetch_text_status_safely(url):
@@ -1233,6 +1331,23 @@ def start_daily_status_scheduler():
     thread.start()
 
 
+def ftp_status_monitor_loop():
+    while True:
+        monitor_ftp_status_once()
+        time.sleep(FTP_STATUS_MONITOR_INTERVAL)
+
+
+def start_ftp_status_monitor():
+    global FTP_STATUS_MONITOR_THREAD_STARTED
+    if FTP_STATUS_MONITOR_THREAD_STARTED or not FTP_EMAIL_STATUS_URL:
+        return
+    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+    FTP_STATUS_MONITOR_THREAD_STARTED = True
+    thread = threading.Thread(target=ftp_status_monitor_loop, name="ftp-status-monitor", daemon=True)
+    thread.start()
+
+
 def daily_status_timezone():
     try:
         return ZoneInfo(DASHBOARD_ZOOM_DAILY_STATUS_TZ)
@@ -1278,6 +1393,7 @@ def add_query_param(url, name, value):
 
 if __name__ == '__main__':
     start_daily_status_scheduler()
+    start_ftp_status_monitor()
     app.run(
         host="0.0.0.0",
         debug=os.getenv("FLASK_DEBUG", "0") == "1",
