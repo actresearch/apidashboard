@@ -409,6 +409,36 @@ class UsageStatsSnapshotTests(unittest.TestCase):
 
         self.assertIn(("ftp_failure", "ftp_transfer"), alerts)
 
+    def test_ftp_status_monitor_ignores_error_recovered_by_later_transfer(self):
+        original_url = dashboard_app.FTP_EMAIL_STATUS_URL
+        original_fetch = dashboard_app.fetch_json_with_token
+        original_notify = dashboard_app.notify_dashboard_failure
+        original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
+        alerts = []
+
+        dashboard_app.FTP_EMAIL_STATUS_URL = "http://ftptransfer:5000/status"
+        dashboard_app.fetch_json_with_token = lambda url, token: {
+            "authenticated": True,
+            "timestamp": "2026-09-15T12:00:00Z",
+            "last_transfer_success": "2026-09-15T11:00:00Z",
+            "last_transfer_error": {
+                "status": "script_failed",
+                "message": "Previous transfer failed",
+                "timestamp": "2026-09-15T10:00:00Z",
+            },
+        }
+        dashboard_app.notify_dashboard_failure = lambda reason, component, force=False: alerts.append((reason, component))
+        dashboard_app.STREAM_OBSERVABILITY_STATE = {}
+        try:
+            dashboard_app.monitor_ftp_status_once()
+        finally:
+            dashboard_app.FTP_EMAIL_STATUS_URL = original_url
+            dashboard_app.fetch_json_with_token = original_fetch
+            dashboard_app.notify_dashboard_failure = original_notify
+            dashboard_app.STREAM_OBSERVABILITY_STATE = original_state
+
+        self.assertNotIn(("ftp_failure", "ftp_transfer"), alerts)
+
     def test_folder_monitor_work_status_requires_success_evidence(self):
         original_state = dashboard_app.STREAM_OBSERVABILITY_STATE
         original_fetch_text = dashboard_app.fetch_text_status_safely

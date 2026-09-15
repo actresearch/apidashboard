@@ -1081,10 +1081,13 @@ def monitor_ftp_status_once():
 
     transfer_error = probe.get("last_transfer_error")
     if isinstance(transfer_error, dict):
+        transfer_error_timestamp = normalize_event_timestamp(transfer_error.get("timestamp")) or observed_at
+        if transfer_success and parse_timestamp(transfer_success) >= parse_timestamp(transfer_error_timestamp):
+            return probe
         process_component_payload("ftp_transfer", {
             "status": transfer_error.get("status") or "error",
             "message": transfer_error.get("message") or "FTP transfer failed",
-            "timestamp": normalize_event_timestamp(transfer_error.get("timestamp")) or observed_at,
+            "timestamp": transfer_error_timestamp,
         })
     return probe
 
