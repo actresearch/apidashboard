@@ -174,6 +174,26 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["warning"], 1)
         self.assertTrue(any(item["automation_id"] == "diesel_prices" and item["status"] == "missing" for item in payload["automations"]))
         self.assertTrue(any(item["automation_id"] == "port_data_monitor" and item["status"] == "warning" for item in payload["automations"]))
+        self.assertTrue(all(item["next_run_utc"] for item in payload["automations"]))
+
+    def test_configured_next_run_uses_local_daily_and_weekly_times(self):
+        wednesday_after_freightwaves = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            dashboard_app.configured_next_run_utc("ata_reports", wednesday_after_freightwaves),
+            "2026-09-17T12:00:00Z",
+        )
+        self.assertEqual(
+            dashboard_app.configured_next_run_utc("aar_weekly_rail", wednesday_after_freightwaves),
+            "2026-09-17T10:00:00Z",
+        )
+        self.assertEqual(
+            dashboard_app.configured_next_run_utc("freightwaves_sonar", wednesday_after_freightwaves),
+            "2026-09-23T11:30:00Z",
+        )
+        self.assertEqual(
+            dashboard_app.configured_next_run_utc("ata_reports", datetime(2026, 12, 1, 18, 0, tzinfo=timezone.utc)),
+            "2026-12-02T13:00:00Z",
+        )
 
     def test_automation_status_post_saves_status_file(self):
         original_dir = dashboard_app.AUTOMATION_STATUS_DIR

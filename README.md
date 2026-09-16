@@ -125,6 +125,8 @@ Each automation payload must include `automation_id`. The dashboard currently ex
 
 If an expected automation has not posted a status file yet, the homepage shows it as `missing`. Use `AUTOMATION_STATUS_PATHS` for optional direct file paths when a status JSON is mounted into the container instead of posted.
 
+The Next Run column is calculated from the configured Windows Task Scheduler start times in `app.py`, using America/Indianapolis time. It is a schedule projection, not a live Task Scheduler query; update `AUTOMATION_SCHEDULES` if a task's schedule changes. Daily runs are EIA 05:00, ports 07:00, ATA 08:00, and BTS 08:30. Weekly runs are AAR Thursday 06:00 and FreightWaves Wednesday 07:30.
+
 ### Automation control setup
 
 Manual controls require a small helper process on the Windows automation machine because the dashboard container runs on Proxmox and cannot open `C:\...` paths or start local Windows batch files by itself.

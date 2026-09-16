@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, render_template, jsonify, make_response, request, stream_with_context
@@ -74,6 +74,34 @@ EXPECTED_AUTOMATIONS = [
     {"automation_id": "bts_transborder", "automation": "BTS TransBorder Raw Data", "cadence": "daily"},
     {"automation_id": "freightwaves_sonar", "automation": "FreightWaves SONAR API", "cadence": "weekly"},
 ]
+AUTOMATION_SCHEDULE_TIME_ZONE = "America/Indianapolis"
+# Local Windows Task Scheduler start times. weekday uses Monday=0.
+AUTOMATION_SCHEDULES = {
+    "diesel_prices": {"hour": 5, "minute": 0},
+    "aar_weekly_rail": {"weekday": 3, "hour": 6, "minute": 0},
+    "port_data_monitor": {"hour": 7, "minute": 0},
+    "ata_reports": {"hour": 8, "minute": 0},
+    "bts_transborder": {"hour": 8, "minute": 30},
+    "freightwaves_sonar": {"weekday": 2, "hour": 7, "minute": 30},
+}
+
+
+def configured_next_run_utc(automation_id, now_utc=None):
+    schedule = AUTOMATION_SCHEDULES.get(automation_id)
+    if schedule is None:
+        return None
+    local_zone = ZoneInfo(AUTOMATION_SCHEDULE_TIME_ZONE)
+    now_local = (now_utc or datetime.now(timezone.utc)).astimezone(local_zone)
+    candidate = now_local.replace(
+        hour=schedule["hour"], minute=schedule["minute"], second=0, microsecond=0
+    )
+    if "weekday" in schedule:
+        candidate += timedelta(days=(schedule["weekday"] - now_local.weekday()) % 7)
+        if candidate <= now_local:
+            candidate += timedelta(days=7)
+    elif candidate <= now_local:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 @app.route('/')
 def dashboard():
@@ -505,6 +533,7 @@ def normalize_automation_status(payload, include_raw=False):
         "cadence": payload.get("cadence") or "unknown",
         "status": status,
         "last_run_utc": payload.get("last_run_utc") or payload.get("finished_utc") or payload.get("generated_at_utc"),
+        "next_run_utc": configured_next_run_utc(automation_id),
         "last_success_utc": payload.get("last_success_utc"),
         "latest_data_period": payload.get("latest_data_period"),
         "failure_count": failure_count,
@@ -531,6 +560,7 @@ def normalize_missing_automation(expected):
         "cadence": expected.get("cadence", "unknown"),
         "status": "missing",
         "last_run_utc": None,
+        "next_run_utc": configured_next_run_utc(expected["automation_id"]),
         "last_success_utc": None,
         "latest_data_period": None,
         "failure_count": 0,
@@ -575,6 +605,7 @@ def normalize_port_status_as_automation(payload, include_raw=False):
         "cadence": "daily",
         "status": status,
         "last_run_utc": last_run,
+        "next_run_utc": configured_next_run_utc("port_data_monitor"),
         "last_success_utc": last_run if status == "ok" else None,
         "latest_data_period": latest_period,
         "failure_count": error_count,

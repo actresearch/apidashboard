@@ -98,6 +98,7 @@
               <th class="text-left font-semibold px-5 py-3">Process</th>
               <th class="text-left font-semibold px-5 py-3">Status</th>
               <th class="text-left font-semibold px-5 py-3">Last Run</th>
+              <th class="text-left font-semibold px-5 py-3" title="Calculated from the configured Windows task schedule">Next Run</th>
               <th class="text-left font-semibold px-5 py-3">Latest Data</th>
               <th class="text-left font-semibold px-5 py-3">Indicators</th>
               <th class="text-left font-semibold px-5 py-3">Detail</th>
@@ -105,7 +106,7 @@
           </thead>
           <tbody id="automation-summary-rows" class="divide-y divide-gray-100">
             <tr>
-              <td colspan="6" class="px-5 py-6 text-center text-gray-500">Loading...</td>
+              <td colspan="7" class="px-5 py-6 text-center text-gray-500">Loading...</td>
             </tr>
           </tbody>
         </table>
@@ -673,7 +674,7 @@
       const body = document.getElementById('automation-summary-rows');
       body.innerHTML = '';
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="6" class="px-5 py-6 text-center text-gray-500">No automation status rows available.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="px-5 py-6 text-center text-gray-500">No automation status rows available.</td></tr>';
         return;
       }
 
@@ -690,6 +691,7 @@
             <span class="inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClasses(item.status)}">${escapeHtml(formatStatus(item.status))}</span>
           </td>
           <td class="px-5 py-3 whitespace-nowrap">${formatTimestamp(item.last_run_utc)}</td>
+          <td class="px-5 py-3 whitespace-nowrap">${item.next_run_utc ? formatTimestamp(item.next_run_utc) : '-'}</td>
           <td class="px-5 py-3 whitespace-nowrap">${escapeHtml(item.latest_data_period || '-')}</td>
           <td class="px-5 py-3 min-w-[280px]">${indicators.length ? indicators.map(escapeHtml).join('<br>') : '-'}</td>
           <td class="px-5 py-3 whitespace-nowrap">

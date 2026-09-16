@@ -198,6 +198,7 @@
 
         document.getElementById('run-details').innerHTML = [
           renderDetailRow('Last Run', formatTimestamp(result.last_run_utc)),
+          renderDetailRow('Next Run', result.next_run_utc ? formatTimestamp(result.next_run_utc) : '-'),
           renderDetailRow('Last Success', formatTimestamp(result.last_success_utc)),
           renderDetailRow('Output', result.output_path),
           renderDetailRow('Failure Detail', result.failure_detail),
