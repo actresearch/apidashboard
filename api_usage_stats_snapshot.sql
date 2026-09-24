@@ -27,6 +27,13 @@ alter table public.api_usage_stats_snapshot enable row level security;
 revoke all on table public.api_usage_stats_snapshot from anon, authenticated;
 grant select on table public.api_usage_stats_snapshot to service_role;
 
+-- Raw API request logs can contain request metadata. Dashboard reads and
+-- Azure Function writers use service_role, not browser roles. Keep raw logs
+-- unavailable to the Supabase Data API's anon/authenticated clients.
+-- Applied to project azxscxcuvvkqzalvsiao on 2026-09-24; safe to reapply.
+revoke all privileges on table public.api_request_logs from anon, authenticated;
+alter table public.api_request_logs enable row level security;
+
 create index if not exists idx_api_request_logs_created_at
   on public.api_request_logs (created_at);
 
