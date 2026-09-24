@@ -96,6 +96,15 @@ class UsageStatsSnapshotTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["ports"][0]["port"], "Savannah")
 
+    def test_ports_page_places_latest_month_after_latest_teu(self):
+        client = dashboard_app.app.test_client()
+        response = client.get("/ports")
+        html = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(html.index("Latest TEU"), html.index("Latest Month"))
+        self.assertIn("formatMonth(port.last_successful_data_month)", html)
+
     def test_port_data_status_post_requires_token(self):
         original_token = dashboard_app.PORT_MONITOR_STATUS_TOKEN
         dashboard_app.PORT_MONITOR_STATUS_TOKEN = ""

@@ -56,9 +56,9 @@
               <th class="text-left font-semibold px-4 py-3">Port</th>
               <th class="text-left font-semibold px-4 py-3">Status</th>
               <th class="text-left font-semibold px-4 py-3">Failure Detail</th>
-              <th class="text-left font-semibold px-4 py-3">Last Successful New Data</th>
               <th class="text-left font-semibold px-4 py-3">Last Data Pull</th>
               <th class="text-right font-semibold px-4 py-3">Latest TEU</th>
+              <th class="text-left font-semibold px-4 py-3">Latest Month</th>
               <th class="text-left font-semibold px-4 py-3">Source</th>
               <th class="text-left font-semibold px-4 py-3">Notes</th>
             </tr>
@@ -111,6 +111,13 @@
     function formatNumber(value) {
       if (value === null || value === undefined || value === '') return '-';
       return Number(value).toLocaleString();
+    }
+
+    function formatMonth(value) {
+      const match = String(value || '').match(/^(\d{4})-?(\d{2})$/);
+      if (!match) return value || '-';
+      const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+      return date.toLocaleString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
     }
 
     function statusClasses(status) {
@@ -208,9 +215,9 @@
             <span class="inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClasses(port.status)}">${escapeHtml(port.status)}</span>
           </td>
           <td class="px-4 py-3 text-gray-700 min-w-[220px]">${escapeHtml(port.failure_detail || '-')}</td>
-          <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(port.last_successful_data_month || '-')}</td>
           <td class="px-4 py-3 whitespace-nowrap">${formatTimestamp(port.last_data_pull_utc)}</td>
           <td class="px-4 py-3 text-right whitespace-nowrap">${formatNumber(port.latest_total_teu)}</td>
+          <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(formatMonth(port.last_successful_data_month))}</td>
           <td class="px-4 py-3 min-w-[120px]">${renderSourceLinks(port.source_urls)}</td>
           <td class="px-4 py-3 text-gray-600 min-w-[260px]">${escapeHtml(port.notes || '')}</td>
         `;
