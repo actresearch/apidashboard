@@ -224,6 +224,8 @@ curl -X POST http://<dashboard-host>:5005/api/zoom_daily_status_test -H "X-Autom
 
 The usage rankings should update no more than once per day. Do not point the dashboard at raw `api_request_logs` rows; that causes high Supabase egress as the table grows.
 
+The setup SQL also revokes `anon` and `authenticated` access to raw `api_request_logs` and enables RLS on that table. This protects request metadata while preserving service-role readers and writers. It was applied directly to Supabase project `azxscxcuvvkqzalvsiao` on 2026-09-24; Josh confirmed he owns the project. A zero-row Data API check returned HTTP 401 with the anon key and HTTP 200 with the service-role key; no log rows were fetched. Josh clarified that the Azure Functions serve this separate dashboard, not the customer portal. Their deployed Supabase targets still need confirmation. Keep the service-role key server-side and do not grant raw-log access to browser roles without a reviewed, narrow use case and policy.
+
 1. Apply [api_usage_stats_snapshot.sql](api_usage_stats_snapshot.sql) in the Supabase SQL Editor or your normal migration process.
 2. Run the initial refresh:
    ```sql
